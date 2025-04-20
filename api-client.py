@@ -7,6 +7,7 @@ import requests
 from pathlib import Path
 import json
 from tqdm import tqdm
+import base64
 
 
 def parse_args():
@@ -21,6 +22,7 @@ def parse_args():
     parser.add_argument("--gpu-memory", type=float, default=6.0, help="GPU memory preservation in GB")
     parser.add_argument("--output-dir", type=str, default="./downloads", help="Directory to save the result")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Status polling interval in seconds")
+    parser.add_argument("--sync", action="store_true", help="Use synchronous API endpoint (/generate-wait)")
     return parser.parse_args()
 
 
@@ -33,6 +35,105 @@ def check_image_file(image_path):
     valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.bmp']
     if not any(image_path.lower().endswith(ext) for ext in valid_extensions):
         print(f"Error: Image file must be one of: {', '.join(valid_extensions)}")
+        sys.exit(1)
+
+
+def submit_generation_job_sync(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory):
+    """Submit a generation job to the synchronous API endpoint and return the video directly"""
+    try:
+        data = {
+            'prompt': prompt,
+            'seed': seed,
+            'total_second_length': length,
+            'mp4_crf': crf,
+            'gpu_memory_preservation': gpu_memory
+        }
+        
+        print(f"Submitting job to {api_url}/generate-wait (synchronous mode)")
+        print(f"Prompt: {prompt}")
+        print(f"Seed: {seed}, Length: {length}s, CRF: {crf}")
+        print("Waiting for generation to complete. This may take several minutes...")
+        
+        # Progress indicator for the wait
+        spinner = ['|', '/', '-', '\\']
+        i = 0
+        
+        # Either submit a file or a URL with a long timeout
+        if image_path:
+            with open(image_path, 'rb') as img_file:
+                files = {'image': img_file}
+                
+                # Start a session with a very long timeout for the sync request
+                with requests.Session() as session:
+                    session.timeout = 3600  # 1 hour timeout
+                    
+                    # Create a stream to monitor progress
+                    with session.post(f"{api_url}/generate-wait", 
+                                     files=files, 
+                                     data=data, 
+                                     stream=True) as response:
+                        if response.status_code != 200:
+                            print(f"Error: API returned status code {response.status_code}")
+                            print(response.text)
+                            sys.exit(1)
+                        
+                        # Collect the complete response
+                        content = b''
+                        print("Processing... ", end='', flush=True)
+                        for chunk in response.iter_content(chunk_size=8192):
+                            # Show a spinner to indicate it's still working
+                            print(f"\rProcessing... {spinner[i % 4]}", end='', flush=True)
+                            i += 1
+                            content += chunk
+                        print("\rProcessing... Done!       ")
+                        
+                        # Parse the JSON response
+                        try:
+                            result = json.loads(content)
+                            return result
+                        except json.JSONDecodeError:
+                            print("Error: Received invalid JSON response")
+                            sys.exit(1)
+                        
+        elif image_url:
+            data['url'] = image_url
+            
+            # Start a session with a very long timeout for the sync request
+            with requests.Session() as session:
+                session.timeout = 3600  # 1 hour timeout
+                
+                # Create a stream to monitor progress
+                with session.post(f"{api_url}/generate-wait", 
+                                 data=data, 
+                                 stream=True) as response:
+                    if response.status_code != 200:
+                        print(f"Error: API returned status code {response.status_code}")
+                        print(response.text)
+                        sys.exit(1)
+                    
+                    # Collect the complete response
+                    content = b''
+                    print("Processing... ", end='', flush=True)
+                    for chunk in response.iter_content(chunk_size=8192):
+                        # Show a spinner to indicate it's still working
+                        print(f"\rProcessing... {spinner[i % 4]}", end='', flush=True)
+                        i += 1
+                        content += chunk
+                    print("\rProcessing... Done!       ")
+                    
+                    # Parse the JSON response
+                    try:
+                        result = json.loads(content)
+                        return result
+                    except json.JSONDecodeError:
+                        print("Error: Received invalid JSON response")
+                        sys.exit(1)
+        else:
+            print("Error: Neither image path nor URL provided")
+            sys.exit(1)
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error submitting job: {str(e)}")
         sys.exit(1)
 
 
@@ -162,6 +263,34 @@ def download_result(api_url, video_url, output_dir):
         sys.exit(1)
 
 
+def save_base64_video(base64_data, output_dir, seed, prompt):
+    """Save a base64-encoded video to file"""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    try:
+        # Generate a filename based on seed and timestamp
+        timestamp = int(time.time())
+        filename = f"video_{seed}_{timestamp}.mp4"
+        output_path = os.path.join(output_dir, filename)
+        
+        print(f"Saving video to {output_path}...")
+        
+        # Decode the base64 data
+        video_bytes = base64.b64decode(base64_data)
+        
+        # Write to file
+        with open(output_path, 'wb') as f:
+            f.write(video_bytes)
+        
+        print(f"Video saved successfully to {output_path}")
+        return output_path
+        
+    except Exception as e:
+        print(f"Error saving video: {str(e)}")
+        sys.exit(1)
+
+
 def main():
     args = parse_args()
     
@@ -178,26 +307,59 @@ def main():
     if args.image:
         check_image_file(args.image)
     
-    # Submit job
-    job_id = submit_generation_job(
-        args.api_url,
-        args.url,
-        args.image, 
-        args.prompt, 
-        args.seed, 
-        args.length,
-        args.crf,
-        args.gpu_memory
-    )
-    
-    # Poll for status - fix the API URL parameter
-    video_url = poll_job_status(args.api_url, job_id, args.poll_interval)
-    
-    # Download the result - fix the API URL parameter
-    if video_url:
-        output_path = download_result(args.api_url, video_url, args.output_dir)
-        print("\nGeneration completed successfully!")
-        print(f"Video file: {output_path}")
+    # Handle the sync mode
+    if args.sync:
+        # Use the synchronous API endpoint
+        response_data = submit_generation_job_sync(
+            args.api_url,
+            args.url,
+            args.image, 
+            args.prompt, 
+            args.seed, 
+            args.length,
+            args.crf,
+            args.gpu_memory
+        )
+        
+        # Process the response
+        try:
+            # Extract video data from the response
+            video_base64 = response_data[0]["body"]["images"][0]
+            duration = response_data[0]["body"]["parameters"]["duration"]
+            
+            # Save the video file
+            output_path = save_base64_video(video_base64, args.output_dir, args.seed, args.prompt)
+            
+            print("\nGeneration completed successfully!")
+            print(f"Video duration: {duration} seconds")
+            print(f"Video file: {output_path}")
+            
+        except (KeyError, IndexError) as e:
+            print(f"Error parsing API response: {str(e)}")
+            print("Response:", json.dumps(response_data, indent=2))
+            sys.exit(1)
+            
+    else:
+        # Use the asynchronous API endpoint (original behavior)
+        job_id = submit_generation_job(
+            args.api_url,
+            args.url,
+            args.image, 
+            args.prompt, 
+            args.seed, 
+            args.length,
+            args.crf,
+            args.gpu_memory
+        )
+        
+        # Poll for status
+        video_url = poll_job_status(args.api_url, job_id, args.poll_interval)
+        
+        # Download the result
+        if video_url:
+            output_path = download_result(args.api_url, video_url, args.output_dir)
+            print("\nGeneration completed successfully!")
+            print(f"Video file: {output_path}")
 
 
 if __name__ == "__main__":
