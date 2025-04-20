@@ -6,6 +6,7 @@ import json
 import uuid
 import time
 from typing import Optional, List, Dict, Any, Union
+import requests
 
 os.environ['HF_HOME'] = os.path.abspath(os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download')))
 
@@ -340,7 +341,8 @@ def generate_video(job_id: str, input_image_array, request: GenerationRequest):
 @app.post("/generate", response_model=JobStatus)
 async def generate_endpoint(
     background_tasks: BackgroundTasks,
-    image: UploadFile = File(...),
+    image: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
     prompt: str = Form(...),
     seed: Optional[int] = Form(31337),
     total_second_length: Optional[float] = Form(5.0),
@@ -350,11 +352,75 @@ async def generate_endpoint(
     # Generate a unique job ID
     job_id = str(uuid.uuid4())
     
-    # Read and validate the input image
-    image_data = await image.read()
+    # Check that either image or URL is provided, but not both
+    if image is None and url is None:
+        raise HTTPException(status_code=400, detail="Either 'image' file or 'url' must be provided")
+    
+    if image is not None and url is not None:
+        raise HTTPException(status_code=400, detail="Both 'image' file and 'url' cannot be provided simultaneously")
+    
     try:
-        img = Image.open(io.BytesIO(image_data))
-        input_image_array = np.array(img)
+        # Process image from uploaded file
+        if image is not None:
+            image_data = await image.read()
+            img = Image.open(io.BytesIO(image_data))
+            input_image_array = np.array(img)
+        
+        # Process image from URL
+        else:
+            try:
+                # First check headers to get file size before downloading
+                head_response = requests.head(url, timeout=10)
+                content_length = head_response.headers.get('content-length')
+                
+                if content_length:
+                    size_in_mb = int(content_length) / (1024 * 1024)
+                    if size_in_mb > 10:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"Image at URL is too large: {size_in_mb:.2f}MB (max 10MB)"
+                        )
+                
+                # Download the image with a timeout and size limit
+                response = requests.get(url, timeout=30, stream=True)
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to download image: HTTP {response.status_code}"
+                    )
+                
+                # Check content type
+                content_type = response.headers.get('content-type', '')
+                if not content_type.startswith('image/'):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"URL does not point to an image (content-type: {content_type})"
+                    )
+                
+                # Download with size limit of 10MB
+                MAX_SIZE = 10 * 1024 * 1024  # 10MB
+                image_data = io.BytesIO()
+                size = 0
+                
+                for chunk in response.iter_content(chunk_size=8192):
+                    size += len(chunk)
+                    if size > MAX_SIZE:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"Image download exceeded 10MB limit"
+                        )
+                    image_data.write(chunk)
+                
+                image_data.seek(0)
+                img = Image.open(image_data)
+                input_image_array = np.array(img)
+                
+            except requests.RequestException as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error downloading image from URL: {str(e)}"
+                )
+    
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
     

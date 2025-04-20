@@ -11,8 +11,9 @@ from tqdm import tqdm
 
 def parse_args():
     parser = argparse.ArgumentParser(description="FramePack API Client")
-    parser.add_argument("--url", type=str, default="http://127.0.0.1:8001", help="API URL")
-    parser.add_argument("--image", type=str, required=True, help="Path to input image")
+    parser.add_argument("--api_url", type=str, default="http://127.0.0.1:8001", help="API URL")
+    parser.add_argument("--url", type=str, required=False, help="URL to image")
+    parser.add_argument("--image", type=str, required=False, help="Path to input image")
     parser.add_argument("--prompt", type=str, required=True, help="Text prompt for generation")
     parser.add_argument("--seed", type=int, default=31337, help="Random seed")
     parser.add_argument("--length", type=float, default=5.0, help="Video length in seconds")
@@ -35,35 +36,42 @@ def check_image_file(image_path):
         sys.exit(1)
 
 
-def submit_generation_job(api_url, image_path, prompt, seed, length, crf, gpu_memory):
+def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory):
     """Submit a generation job to the API and return the job ID"""
     try:
-        with open(image_path, 'rb') as img_file:
-            files = {'image': img_file}
-            data = {
-                'prompt': prompt,
-                'seed': seed,
-                'total_second_length': length,
-                'mp4_crf': crf,
-                'gpu_memory_preservation': gpu_memory
-            }
+        data = {
+            'prompt': prompt,
+            'seed': seed,
+            'total_second_length': length,
+            'mp4_crf': crf,
+            'gpu_memory_preservation': gpu_memory
+        }
+        
+        print(f"Submitting job to {api_url}/generate")
+        print(f"Prompt: {prompt}")
+        print(f"Seed: {seed}, Length: {length}s, CRF: {crf}")
+        
+        # Either submit a file or a URL
+        if image_path:
+            with open(image_path, 'rb') as img_file:
+                files = {'image': img_file}
+                response = requests.post(f"{api_url}/generate", files=files, data=data, timeout=180)
+        elif image_url:
+            data['url'] = image_url
+            response = requests.post(f"{api_url}/generate", data=data, timeout=180)
+        else:
+            print("Error: Neither image path nor URL provided")
+            sys.exit(1)
+        
+        if response.status_code != 200:
+            print(f"Error: API returned status code {response.status_code}")
+            print(response.text)
+            sys.exit(1)
             
-            print(f"Submitting job to {api_url}/generate")
-            print(f"Prompt: {prompt}")
-            print(f"Seed: {seed}, Length: {length}s, CRF: {crf}")
-            
-            # Use a longer timeout for the initial submission
-            response = requests.post(f"{api_url}/generate", files=files, data=data, timeout=180)
-            
-            if response.status_code != 200:
-                print(f"Error: API returned status code {response.status_code}")
-                print(response.text)
-                sys.exit(1)
-                
-            result = response.json()
-            print(f"Job submitted successfully. Job ID: {result['job_id']}")
-            return result['job_id']
-            
+        result = response.json()
+        print(f"Job submitted successfully. Job ID: {result['job_id']}")
+        return result['job_id']
+        
     except requests.exceptions.RequestException as e:
         print(f"Error submitting job: {str(e)}")
         sys.exit(1)
@@ -157,12 +165,23 @@ def download_result(api_url, video_url, output_dir):
 def main():
     args = parse_args()
     
-    # Validate image file
-    check_image_file(args.image)
+    # Validate that either image file or URL is provided
+    if not args.image and not args.url:
+        print("Error: Either --image or --url must be provided")
+        sys.exit(1)
+    
+    if args.image and args.url:
+        print("Error: Cannot provide both --image and --url. Choose one.")
+        sys.exit(1)
+    
+    # Validate image file if provided
+    if args.image:
+        check_image_file(args.image)
     
     # Submit job
     job_id = submit_generation_job(
-        args.url, 
+        args.api_url,
+        args.url,
         args.image, 
         args.prompt, 
         args.seed, 
@@ -171,12 +190,12 @@ def main():
         args.gpu_memory
     )
     
-    # Poll for status
-    video_url = poll_job_status(args.url, job_id, args.poll_interval)
+    # Poll for status - fix the API URL parameter
+    video_url = poll_job_status(args.api_url, job_id, args.poll_interval)
     
-    # Download the result
+    # Download the result - fix the API URL parameter
     if video_url:
-        output_path = download_result(args.url, video_url, args.output_dir)
+        output_path = download_result(args.api_url, video_url, args.output_dir)
         print("\nGeneration completed successfully!")
         print(f"Video file: {output_path}")
 
