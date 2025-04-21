@@ -122,6 +122,7 @@ class GenerationRequest(BaseModel):
     total_second_length: float = 5.0
     mp4_crf: int = 16
     gpu_memory_preservation: float = 6.0
+    use_teacache: bool = True
 
 class JobStatus(BaseModel):
     job_id: str
@@ -143,7 +144,7 @@ def generate_video(job_id: str, input_image_array, request: GenerationRequest):
     gs = 10.0
     rs = 0.0
     gpu_memory_preservation = request.gpu_memory_preservation
-    use_teacache = True
+    use_teacache = request.use_teacache
     mp4_crf = request.mp4_crf
     
     # Update job status
@@ -350,7 +351,8 @@ async def generate_endpoint(
     seed: Optional[int] = Form(31337),
     total_second_length: Optional[float] = Form(5.0),
     mp4_crf: Optional[int] = Form(16),
-    gpu_memory_preservation: Optional[float] = Form(6.0)
+    gpu_memory_preservation: Optional[float] = Form(6.0),
+    use_teacache: Optional[bool] = Form(True)
 ):
     # Generate a unique job ID
     job_id = str(uuid.uuid4())
@@ -433,7 +435,8 @@ async def generate_endpoint(
         seed=seed,
         total_second_length=total_second_length,
         mp4_crf=mp4_crf,
-        gpu_memory_preservation=gpu_memory_preservation
+        gpu_memory_preservation=gpu_memory_preservation,
+        use_teacache=use_teacache
     )
     
     # Initialize job status
@@ -476,11 +479,15 @@ async def generate_wait_endpoint(
     seed: Optional[int] = Form(31337),
     total_second_length: Optional[float] = Form(5.0),
     mp4_crf: Optional[int] = Form(16),
-    gpu_memory_preservation: Optional[float] = Form(6.0)
+    gpu_memory_preservation: Optional[float] = Form(6.0),
+    use_teacache: Optional[bool] = Form(True)
 ):
     # Generate a unique job ID
     job_id = str(uuid.uuid4())
-    
+    # Debugging: Print all arguments
+    print(f"Arguments received: image={image}, url={url}, prompt={prompt}, seed={seed}, "
+        f"total_second_length={total_second_length}, mp4_crf={mp4_crf}, "
+        f"gpu_memory_preservation={gpu_memory_preservation}, use_teacache={use_teacache}")
     # Check that either image or URL is provided, but not both
     if image is None and url is None:
         raise HTTPException(status_code=400, detail="Either 'image' file or 'url' must be provided")
@@ -561,7 +568,8 @@ async def generate_wait_endpoint(
         seed=seed,
         total_second_length=total_second_length,
         mp4_crf=mp4_crf,
-        gpu_memory_preservation=gpu_memory_preservation
+        gpu_memory_preservation=gpu_memory_preservation,
+        use_teacache=use_teacache
     )
     
     # Initialize job status
@@ -596,19 +604,15 @@ async def generate_wait_endpoint(
     actual_duration = f"{max(0, (jobs[job_id]['total_frames'] - 3) / 30):.2f}"
     
     # Format response according to required structure
-    response_data = [
-        {
-            "body": {
-                "images": [video_base64],
-                "parameters": {
-                    "duration": actual_duration,
-                    "image_url": image_source if url else "",
-                    "prompt": prompt
-                },
-                "seed": seed
-            }
+    response_data = {
+            "images": [video_base64],
+            "parameters": {
+                "duration": actual_duration,
+                "image_url": image_source if url else "",
+                "prompt": prompt
+            },
+            "seed": seed
         }
-    ]
     
     return response_data
 
@@ -642,7 +646,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
     gs = 10.0
     rs = 0.0
     gpu_memory_preservation = request.gpu_memory_preservation
-    use_teacache = True
+    use_teacache = request.use_teacache
     mp4_crf = request.mp4_crf
     
     # Update job status

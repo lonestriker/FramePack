@@ -23,6 +23,8 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default="./downloads", help="Directory to save the result")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Status polling interval in seconds")
     parser.add_argument("--sync", action="store_true", help="Use synchronous API endpoint (/generate-wait)")
+    parser.add_argument("--no-teacache", action="store_true", default=False,
+                        help="Disable TeaCache (slower generation but may improve hand/finger quality)")
     return parser.parse_args()
 
 
@@ -38,7 +40,7 @@ def check_image_file(image_path):
         sys.exit(1)
 
 
-def submit_generation_job_sync(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory):
+def submit_generation_job_sync(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory, use_teacache):
     """Submit a generation job to the synchronous API endpoint and return the video directly"""
     try:
         data = {
@@ -46,12 +48,14 @@ def submit_generation_job_sync(api_url, image_url, image_path, prompt, seed, len
             'seed': seed,
             'total_second_length': length,
             'mp4_crf': crf,
-            'gpu_memory_preservation': gpu_memory
+            'gpu_memory_preservation': gpu_memory,
+            'use_teacache': use_teacache
         }
         
         print(f"Submitting job to {api_url}/generate-wait (synchronous mode)")
         print(f"Prompt: {prompt}")
         print(f"Seed: {seed}, Length: {length}s, CRF: {crf}")
+        print(f"TeaCache: {'enabled' if use_teacache else 'disabled'}")
         print("Waiting for generation to complete. This may take several minutes...")
         
         # Progress indicator for the wait
@@ -137,7 +141,7 @@ def submit_generation_job_sync(api_url, image_url, image_path, prompt, seed, len
         sys.exit(1)
 
 
-def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory):
+def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory, use_teacache):
     """Submit a generation job to the API and return the job ID"""
     try:
         data = {
@@ -145,12 +149,14 @@ def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, 
             'seed': seed,
             'total_second_length': length,
             'mp4_crf': crf,
-            'gpu_memory_preservation': gpu_memory
+            'gpu_memory_preservation': gpu_memory,
+            'use_teacache': use_teacache
         }
         
         print(f"Submitting job to {api_url}/generate")
         print(f"Prompt: {prompt}")
         print(f"Seed: {seed}, Length: {length}s, CRF: {crf}")
+        print(f"TeaCache: {'enabled' if use_teacache else 'disabled'}")
         
         # Either submit a file or a URL
         if image_path:
@@ -294,6 +300,9 @@ def save_base64_video(base64_data, output_dir, seed, prompt):
 def main():
     args = parse_args()
     
+    # Convert no-teacache flag to use_teacache boolean
+    use_teacache = not args.no_teacache
+    
     # Validate that either image file or URL is provided
     if not args.image and not args.url:
         print("Error: Either --image or --url must be provided")
@@ -318,14 +327,15 @@ def main():
             args.seed, 
             args.length,
             args.crf,
-            args.gpu_memory
+            args.gpu_memory,
+            use_teacache
         )
         
         # Process the response
         try:
             # Extract video data from the response
-            video_base64 = response_data[0]["body"]["images"][0]
-            duration = response_data[0]["body"]["parameters"]["duration"]
+            video_base64 = response_data["images"][0]
+            duration = response_data["parameters"]["duration"]
             
             # Save the video file
             output_path = save_base64_video(video_base64, args.output_dir, args.seed, args.prompt)
@@ -349,7 +359,8 @@ def main():
             args.seed, 
             args.length,
             args.crf,
-            args.gpu_memory
+            args.gpu_memory,
+            use_teacache
         )
         
         # Poll for status
