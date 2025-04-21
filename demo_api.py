@@ -42,6 +42,8 @@ import asyncio
 parser = argparse.ArgumentParser()
 parser.add_argument("--server", type=str, default='0.0.0.0')
 parser.add_argument("--port", type=int, default=8001)
+parser.add_argument("--save-intermediates", action="store_true", 
+                    help="Save intermediate video files during generation (default: only save final result)")
 args = parser.parse_args()
 
 # Initialize FastAPI app
@@ -123,6 +125,7 @@ class GenerationRequest(BaseModel):
     mp4_crf: int = 16
     gpu_memory_preservation: float = 6.0
     use_teacache: bool = True
+    save_intermediates: bool = False
 
 class JobStatus(BaseModel):
     job_id: str
@@ -146,6 +149,7 @@ def generate_video(job_id: str, input_image_array, request: GenerationRequest):
     gpu_memory_preservation = request.gpu_memory_preservation
     use_teacache = request.use_teacache
     mp4_crf = request.mp4_crf
+    save_intermediates = request.save_intermediates
     
     # Update job status
     jobs[job_id]["status"] = "processing"
@@ -317,14 +321,19 @@ def generate_video(job_id: str, input_image_array, request: GenerationRequest):
                 unload_complete_models()
 
             output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
-            save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
-
-            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
-
-            # Update the job status with the latest video URL
-            jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
-
+            
+            # Only save intermediate video files if requested
+            if save_intermediates or is_last_section:
+                save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+                print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
+                jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
+            
             if is_last_section:
+                # If we're not saving intermediates, make sure we save the final result
+                if not save_intermediates:
+                    save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+                    print(f'Decoded final result. Shape {history_pixels.shape}')
+                    jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
                 break
 
         # Final update when complete
@@ -352,7 +361,8 @@ async def generate_endpoint(
     total_second_length: Optional[float] = Form(5.0),
     mp4_crf: Optional[int] = Form(16),
     gpu_memory_preservation: Optional[float] = Form(6.0),
-    use_teacache: Optional[bool] = Form(True)
+    use_teacache: Optional[bool] = Form(True),
+    save_intermediates: Optional[bool] = Form(False)
 ):
     # Generate a unique job ID
     job_id = str(uuid.uuid4())
@@ -436,7 +446,8 @@ async def generate_endpoint(
         total_second_length=total_second_length,
         mp4_crf=mp4_crf,
         gpu_memory_preservation=gpu_memory_preservation,
-        use_teacache=use_teacache
+        use_teacache=use_teacache,
+        save_intermediates=save_intermediates or args.save_intermediates  # Use cmd line flag or per-request setting
     )
     
     # Initialize job status
@@ -480,14 +491,15 @@ async def generate_wait_endpoint(
     total_second_length: Optional[float] = Form(5.0),
     mp4_crf: Optional[int] = Form(16),
     gpu_memory_preservation: Optional[float] = Form(6.0),
-    use_teacache: Optional[bool] = Form(True)
+    use_teacache: Optional[bool] = Form(True),
+    save_intermediates: Optional[bool] = Form(False)
 ):
     # Generate a unique job ID
     job_id = str(uuid.uuid4())
     # Debugging: Print all arguments
     print(f"Arguments received: image={image}, url={url}, prompt={prompt}, seed={seed}, "
         f"total_second_length={total_second_length}, mp4_crf={mp4_crf}, "
-        f"gpu_memory_preservation={gpu_memory_preservation}, use_teacache={use_teacache}")
+        f"gpu_memory_preservation={gpu_memory_preservation}, use_teacache={use_teacache}, save_intermediates={save_intermediates}")
     # Check that either image or URL is provided, but not both
     if image is None and url is None:
         raise HTTPException(status_code=400, detail="Either 'image' file or 'url' must be provided")
@@ -569,7 +581,8 @@ async def generate_wait_endpoint(
         total_second_length=total_second_length,
         mp4_crf=mp4_crf,
         gpu_memory_preservation=gpu_memory_preservation,
-        use_teacache=use_teacache
+        use_teacache=use_teacache,
+        save_intermediates=save_intermediates or args.save_intermediates  # Use cmd line flag or per-request setting
     )
     
     # Initialize job status
@@ -648,6 +661,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
     gpu_memory_preservation = request.gpu_memory_preservation
     use_teacache = request.use_teacache
     mp4_crf = request.mp4_crf
+    save_intermediates = request.save_intermediates
     
     # Update job status
     jobs[job_id]["status"] = "processing"
@@ -821,14 +835,19 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
                 unload_complete_models()
 
             output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
-            save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
-
-            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
-
-            # Update the job status with the latest video URL
-            jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
-
+            
+            # Only save intermediate video files if requested
+            if save_intermediates or is_last_section:
+                save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+                print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
+                jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
+            
             if is_last_section:
+                # If we're not saving intermediates, make sure we save the final result
+                if not save_intermediates:
+                    save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+                    print(f'Decoded final result. Shape {history_pixels.shape}')
+                    jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
                 break
 
         # Calculate total frames for duration
