@@ -5,15 +5,30 @@ import queue
 import subprocess
 import uuid
 import time
+import json
 
 app = Flask(__name__)
 
-# Configuration
+# --- Configuration Loading ---
+def load_config():
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            if not isinstance(config.get('API_SERVERS'), list):
+                raise ValueError("'API_SERVERS' key missing or not a list in config.json")
+            return config
+    except FileNotFoundError:
+        print("ERROR: config.json not found. Please create it based on config.json.example.")
+        exit(1)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"ERROR: Could not parse config.json: {e}")
+        exit(1)
+
+config_data = load_config()
+API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
+
+# Configuration Constants (can still be defined here if needed)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
-API_SERVERS = [
-    'https://gradio-api-2-tr.hien.net',
-    'https://gradio-api-3-tr.hien.net'
-]
 MAX_DURATION = 120
 DEFAULT_DURATION = 5
 

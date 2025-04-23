@@ -1,0 +1,6 @@
+{
+  "API_SERVERS": [
+    "https://your-api-server-1.example.com",
+    "https://your-api-server-2.example.com"
+  ]
+}
