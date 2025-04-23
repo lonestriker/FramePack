@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Image Browser & Video Generator</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Image Browser & Video Generator</h1>
+    <form method="post">
+        <label for="directory">Enter Directory Path:</label><br>
+        <input type="text" id="directory" name="directory" size="80" required><br><br>
+        <button type="submit">Browse Images</button>
+    </form>
+    {% if error %}
+        <p class="error">Error: {{ error }}</p>
+    {% endif %}
+</body>
+</html>

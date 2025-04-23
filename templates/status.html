@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Job Status</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1em; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
+        th { background-color: #f2f2f2; }
+        pre { white-space: pre-wrap; word-wrap: break-word; background-color: #eee; padding: 5px; max-height: 200px; overflow-y: auto; }
+        .status-queued { color: orange; }
+        .status-running { color: blue; }
+        .status-completed { color: green; }
+        .status-failed { color: red; }
+    </style>
+    <!-- Add meta tag for auto-refresh -->
+    <meta http-equiv="refresh" content="5">
+</head>
+<body>
+    <h1>Job Status</h1>
+    <p><a href="{{ url_for('index') }}">Start New Job</a></p>
+    <p>(Page auto-refreshes every 5 seconds)</p>
+
+    {% if jobs %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Job ID</th>
+                    <th>Status</th>
+                    <th>Parameters</th>
+                    <th>Output Log</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job_id, job_data in jobs.items()|reverse %}
+                    <tr>
+                        <td>{{ job_id }}</td>
+                        <td class="status-{{ job_data.status }}">{{ job_data.status }}</td>
+                        <td>
+                            Image: {{ job_data.params.image_path.split('\\')[-1] }}<br> <!-- Show only filename -->
+                            Prompt: {{ job_data.params.prompt }}<br>
+                            Duration: {{ job_data.params.duration }}s<br>
+                            Server: {{ job_data.params.api_server }}
+                        </td>
+                        <td>
+                            <pre>{{ job_data.output | join('\n') }}</pre>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No jobs submitted yet.</p>
+    {% endif %}
+</body>
+</html>
