@@ -6,6 +6,7 @@ import subprocess
 import uuid
 import time
 import json
+import math
 
 app = Flask(__name__)
 
@@ -27,6 +28,10 @@ def load_config():
 config_data = load_config()
 API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
 
+# Define retry constants
+BASE_RETRY_DELAY = 1  # seconds
+MAX_RETRY_DELAY = 60 # seconds
+
 # Configuration Constants (can still be defined here if needed)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 MAX_DURATION = 120
@@ -34,9 +39,14 @@ DEFAULT_DURATION = 5
 
 # --- In-memory state (for simplicity, replace with DB/proper state management later) ---
 job_queue = queue.Queue()
-job_status = {} # {job_id: {'status': 'queued'/'running'/'completed'/'failed', 'output': [], 'params': {}}}
-active_servers = {server: True for server in API_SERVERS} # Track server availability
-server_lock = threading.Lock()
+# Updated job_status structure
+job_status = {} # {job_id: {'status': 'queued'/'running'/'completed'/'failed_will_retry', 'output': [], 'params': {}}}
+# Replace active_servers with server_status
+server_status = {
+    server: {'available': True, 'fail_count': 0, 'next_retry_time': 0}
+    for server in API_SERVERS
+}
+server_lock = threading.Lock() # Keep the lock
 
 # --- Routes ---
 
@@ -106,6 +116,20 @@ def api_jobs():
     # Return a copy to avoid issues if dict changes during serialization
     return jsonify(dict(job_status))
 
+# --- New Route for Server Status ---
+@app.route('/api/server_status')
+def api_server_status():
+    with server_lock:
+        # Return a copy to ensure thread safety during serialization
+        # Format timestamps for better readability if desired
+        status_copy = {}
+        current_time = time.time()
+        for server, status in server_status.items():
+            status_copy[server] = status.copy() # Create a copy of the inner dict
+            status_copy[server]['next_retry_available_in_seconds'] = max(0, status['next_retry_time'] - current_time)
+            status_copy[server]['next_retry_time_readable'] = time.ctime(status['next_retry_time']) if status['next_retry_time'] > 0 else "N/A"
+        return jsonify(status_copy)
+
 # --- Route to serve images safely ---
 @app.route('/images/<path:filename>')
 def serve_image(filename):
@@ -123,62 +147,130 @@ def serve_image(filename):
 def worker():
     while True:
         job_id, params = job_queue.get() # Blocks until an item is available
-        
+
+        # --- Server Selection ---
         assigned_server = None
         while assigned_server is None:
+            current_time = time.time()
             with server_lock:
-                for server, available in active_servers.items():
-                    if available:
-                        active_servers[server] = False # Mark as busy
-                        assigned_server = server
-                        break
-            if assigned_server is None:
-                # If no server is free, wait a bit before checking again
-                time.sleep(1) 
+                # Find the best available server (least recently failed or ready for retry)
+                candidates = []
+                for server, status in server_status.items():
+                    if status['available'] and current_time >= status['next_retry_time']:
+                         candidates.append((server, status['fail_count'], status['next_retry_time']))
 
+                if candidates:
+                     # Prioritize servers with lower fail counts, then earlier retry times
+                     candidates.sort(key=lambda x: (x[1], x[2]))
+                     assigned_server = candidates[0][0]
+                     server_status[assigned_server]['available'] = False # Mark as busy temporarily
+                     print(f"Job {job_id} assigned to server {assigned_server}")
+                else:
+                     # Check if any server is potentially available but waiting for backoff
+                     waiting_servers = any(current_time < s['next_retry_time'] for s in server_status.values() if s['next_retry_time'] > 0)
+                     all_servers_busy = all(not s['available'] for s in server_status.values())
+                     # Only print waiting message if there are servers in backoff or all busy
+                     #if waiting_servers or all_servers_busy:
+                          # print(f"No servers immediately available for job {job_id}. Waiting...") # Less verbose debugging
+                          # pass
+                     time.sleep(0.5) # Wait before checking again
+
+
+        # --- Job Execution ---
         job_status[job_id]['status'] = 'running'
-        job_status[job_id]['output'].append(f"Assigned to server: {assigned_server}")
-        
+        # Simplified log message, removed retry count
+        job_status[job_id]['output'].append(f"Attempting job on server: {assigned_server}")
+
+        job_failed = False
+        error_message = ""
+
         try:
             command = [
                 'python',
                 'api-client.py',
                 '--api_url', assigned_server,
                 '--prompt', params['prompt'],
-                '--length', str(params['duration']), 
+                '--length', str(params['duration']),
                 '--image', params['image_path']
             ]
-            
-            # Using subprocess.Popen for real-time output capture
-            process = subprocess.Popen(command, 
-                                       stdout=subprocess.PIPE, 
-                                       stderr=subprocess.STDOUT, # Combine stdout and stderr
-                                       text=True, 
-                                       bufsize=1, # Line buffered
+
+            process = subprocess.Popen(command,
+                                       stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT,
+                                       text=True,
+                                       bufsize=1,
                                        universal_newlines=True,
-                                       cwd=os.path.dirname(os.path.abspath(__file__))) # Run in script's dir
+                                       cwd=os.path.dirname(os.path.abspath(__file__)))
 
-            # Capture output line by line
+            output_lines = []
             for line in process.stdout:
-                job_status[job_id]['output'].append(line.strip())
-            
-            process.wait() # Wait for the process to complete
+                stripped_line = line.strip()
+                # Limit output stored per job to avoid memory issues? Maybe later.
+                if len(job_status[job_id]['output']) < 100: # Limit to 100 lines for now
+                    job_status[job_id]['output'].append(stripped_line)
+                output_lines.append(stripped_line) # Keep local copy for logging
 
-            if process.returncode == 0:
+            process.wait()
+
+            if process.returncode != 0:
+                job_failed = True
+                # More specific error message
+                error_message = f"Job script failed on {assigned_server} with return code: {process.returncode}"
+                job_status[job_id]['output'].append(error_message)
+            else:
+                # Success!
                 job_status[job_id]['status'] = 'completed'
                 job_status[job_id]['output'].append("Job completed successfully.")
-            else:
-                job_status[job_id]['status'] = 'failed'
-                job_status[job_id]['output'].append(f"Job failed with return code: {process.returncode}")
+                 # Reset server status on success
+                with server_lock:
+                    server_status[assigned_server]['fail_count'] = 0
+                    server_status[assigned_server]['next_retry_time'] = 0
+                    # Ensure available is True after success
+                    if not server_status[assigned_server]['available']:
+                         server_status[assigned_server]['available'] = True # Should already be false, but make sure
+                         print(f"Server {assigned_server} marked available after job success.")
+                print(f"Job {job_id} completed successfully on {assigned_server}. Resetting server status.")
+
 
         except Exception as e:
-            job_status[job_id]['status'] = 'failed'
-            job_status[job_id]['output'].append(f"Error executing job: {e}")
+            job_failed = True
+            error_message = f"Exception during job execution on {assigned_server}: {e}"
+            job_status[job_id]['output'].append(error_message)
+            print(f"Job {job_id} encountered exception on {assigned_server}: {e}")
+
         finally:
-             # Release the server
-            with server_lock:
-                 active_servers[assigned_server] = True
-            job_queue.task_done()
+            server_needs_release = True # Assume server needs release unless failed
+            if job_failed:
+                # Failure: Penalize server, re-queue job, mark server available for future (after backoff)
+                job_status[job_id]['status'] = 'failed_will_retry' # Status indicates it will be tried again
+                job_status[job_id]['output'].append(f"Job failed on {assigned_server}. Re-queuing.")
+                print(f"Job {job_id} failed on {assigned_server}. Applying backoff and re-queuing.")
+
+                # Apply backoff to the server and mark available (respecting backoff time)
+                with server_lock:
+                    server_status[assigned_server]['fail_count'] += 1
+                    # Calculate delay: base * 2^(fails-1), ensure fail_count >= 1
+                    delay = min(BASE_RETRY_DELAY * (2 ** max(0, server_status[assigned_server]['fail_count'] - 1)), MAX_RETRY_DELAY)
+                    server_status[assigned_server]['next_retry_time'] = time.time() + delay
+                    server_status[assigned_server]['available'] = True # It's available, but the selection logic checks next_retry_time
+                    print(f"Server {assigned_server} failed. Backoff: {delay:.2f}s. Fail count: {server_status[assigned_server]['fail_count']}. Next available check after: {time.ctime(server_status[assigned_server]['next_retry_time'])} ")
+
+                # Re-queue the job IMMEDIATELY (it will wait for an available server)
+                job_queue.put((job_id, params))
+                server_needs_release = False # Availability already set in backoff logic
+
+            # Release the server lock only if the job succeeded
+            if server_needs_release:
+                 with server_lock:
+                      # Double-check it should be available
+                      if not server_status[assigned_server]['available']:
+                         server_status[assigned_server]['available'] = True
+                         # Resetting time just in case, although it should have been done on success path
+                         server_status[assigned_server]['next_retry_time'] = 0
+                         print(f"Server {assigned_server} explicitly released (job success).")
+
+
+            job_queue.task_done() # Signal task completion for queue management
 
 # --- Main Execution ---
 if __name__ == '__main__':
