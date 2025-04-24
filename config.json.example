@@ -1,6 +1,9 @@
 {
   "API_SERVERS": [
-    "https://your-api-server-1.example.com",
-    "https://your-api-server-2.example.com"
-  ]
+    "http://localhost:7860",
+    "https://your-other-server.com"
+  ],
+  // Optional: Enable detailed logging of job events to files in the 'logs' directory.
+  // Defaults to true if omitted.
+  "ENABLE_JOB_LOGGING": true 
 }

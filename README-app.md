@@ -47,7 +47,21 @@ This directory contains a Flask-based web application that provides a user inter
     ```
     *This file (`config.json`) is ignored by Git, so your server URLs won't be committed.*
 
-3.  **(Optional) Modify `IMAGE_DIR` in `app.py`:**
+3.  **(Optional) Configure Logging:**
+    You can control detailed job logging by adding the `ENABLE_JOB_LOGGING` option to `config.json`:
+    ```json
+    {
+      "API_SERVERS": [
+        "https://your-actual-api-server-1.com",
+        "https://your-actual-api-server-2.com"
+      ],
+      "ENABLE_JOB_LOGGING": true
+    }
+    ```
+    *   If set to `true` (or omitted, as it defaults to `true`), the application will log events like job submission, assignment, success, failure, and server backoff to timestamped files (e.g., `framepack_YYYYMMDD_HHMMSS.log`) in a `logs/` directory.
+    *   Set to `false` to disable file logging.
+
+4.  **(Optional) Modify `IMAGE_DIR` in `app.py`:**
     By default, the application serves images from the `framepack/images` directory relative to where `app.py` is run. You can change the `IMAGE_DIR` variable near the top of `app.py` if your images are located elsewhere.
 
 ## Running the Application

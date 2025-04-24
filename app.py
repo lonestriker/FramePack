@@ -7,8 +7,15 @@ import uuid
 import time
 import json
 import math
+import logging
+from datetime import datetime
 
 app = Flask(__name__)
+
+# --- Logging Setup --- 
+logger = logging.getLogger('framepack')
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# Log file setup will happen after config load
 
 # --- Configuration Loading ---
 def load_config():
@@ -17,6 +24,9 @@ def load_config():
             config = json.load(f)
             if not isinstance(config.get('API_SERVERS'), list):
                 raise ValueError("'API_SERVERS' key missing or not a list in config.json")
+            # Add default for logging flag if missing
+            if 'ENABLE_JOB_LOGGING' not in config:
+                 config['ENABLE_JOB_LOGGING'] = True
             return config
     except FileNotFoundError:
         print("ERROR: config.json not found. Please create it based on config.json.example.")
@@ -27,6 +37,20 @@ def load_config():
 
 config_data = load_config()
 API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
+ENABLE_JOB_LOGGING = config_data.get('ENABLE_JOB_LOGGING', True) # Get logging flag
+
+# --- Finalize Logging Setup (after config load) ---
+if ENABLE_JOB_LOGGING:
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    log_filename = f"logs/framepack_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(file_handler)
+    logger.setLevel(logging.INFO)
+    logger.info("--- Application Started --- Log file created.")
+else:
+    logger.addHandler(logging.NullHandler()) # Prevent 'no handlers' warning if disabled
 
 # Define retry constants
 BASE_RETRY_DELAY = 1  # seconds
@@ -108,6 +132,9 @@ def generate():
     job_status[job_id] = {'status': 'queued', 'output': [], 'params': params}
     job_queue.put((job_id, params))
 
+    if ENABLE_JOB_LOGGING:
+        logger.info(f"Job Submitted - ID: {job_id}, Image: {image_path}, Prompt: '{params['prompt']}', Duration: {params['duration']}s")
+
     return jsonify({'job_id': job_id, 'status': 'queued'}), 202 # 202 Accepted
 
 # --- New API Route for Job Status ---
@@ -165,6 +192,8 @@ def worker():
                      assigned_server = candidates[0][0]
                      server_status[assigned_server]['available'] = False # Mark as busy temporarily
                      print(f"Job {job_id} assigned to server {assigned_server}")
+                     if ENABLE_JOB_LOGGING:
+                        logger.info(f"Job Assigned - ID: {job_id} assigned to Server: {assigned_server}")
                 else:
                      # Check if any server is potentially available but waiting for backoff
                      waiting_servers = any(current_time < s['next_retry_time'] for s in server_status.values() if s['next_retry_time'] > 0)
@@ -179,7 +208,8 @@ def worker():
         # --- Job Execution ---
         job_status[job_id]['status'] = 'running'
         # Simplified log message, removed retry count
-        job_status[job_id]['output'].append(f"Attempting job on server: {assigned_server}")
+        # Output now includes assignment info, so logger info added above
+        # job_status[job_id]['output'].append(f"Attempting job on server: {assigned_server}")
 
         job_failed = False
         error_message = ""
@@ -230,7 +260,20 @@ def worker():
                          server_status[assigned_server]['available'] = True # Should already be false, but make sure
                          print(f"Server {assigned_server} marked available after job success.")
                 print(f"Job {job_id} completed successfully on {assigned_server}. Resetting server status.")
-
+                if ENABLE_JOB_LOGGING:
+                    # Attempt to find output filename (heuristic, might need adjustment)
+                    output_filename = "Unknown"
+                    for line in reversed(output_lines): # Check recent lines first
+                        if line.lower().endswith(tuple(IMAGE_EXTENSIONS)) and os.path.basename(line) != os.path.basename(params['image_path']):
+                            output_filename = line
+                            break
+                        elif 'saved to' in line.lower(): # Alternative check
+                            try:
+                                output_filename = line.split('saved to')[-1].strip()
+                            except:
+                                pass # Ignore split errors
+                            break
+                    logger.info(f"Job Success - ID: {job_id}, Server: {assigned_server}, Image: {params['image_path']}, Prompt: '{params['prompt']}', Duration: {params['duration']}s, Output File: {output_filename}")
 
         except Exception as e:
             job_failed = True
@@ -245,6 +288,8 @@ def worker():
                 job_status[job_id]['status'] = 'failed_will_retry' # Status indicates it will be tried again
                 job_status[job_id]['output'].append(f"Job failed on {assigned_server}. Re-queuing.")
                 print(f"Job {job_id} failed on {assigned_server}. Applying backoff and re-queuing.")
+                if ENABLE_JOB_LOGGING:
+                     logger.warning(f"Job Failed - ID: {job_id}, Server: {assigned_server}. Reason: {error_message}. Applying backoff and re-queuing.")
 
                 # Apply backoff to the server and mark available (respecting backoff time)
                 with server_lock:
@@ -254,9 +299,13 @@ def worker():
                     server_status[assigned_server]['next_retry_time'] = time.time() + delay
                     server_status[assigned_server]['available'] = True # It's available, but the selection logic checks next_retry_time
                     print(f"Server {assigned_server} failed. Backoff: {delay:.2f}s. Fail count: {server_status[assigned_server]['fail_count']}. Next available check after: {time.ctime(server_status[assigned_server]['next_retry_time'])} ")
+                    if ENABLE_JOB_LOGGING:
+                        logger.info(f"Server Backoff - Server: {assigned_server}, FailCount: {server_status[assigned_server]['fail_count']}, Delay: {delay:.2f}s, Next Check: {time.ctime(server_status[assigned_server]['next_retry_time'])}")
 
                 # Re-queue the job IMMEDIATELY (it will wait for an available server)
                 job_queue.put((job_id, params))
+                if ENABLE_JOB_LOGGING:
+                    logger.info(f"Job Re-queued - ID: {job_id}")
                 server_needs_release = False # Availability already set in backoff logic
 
             # Release the server lock only if the job succeeded
@@ -285,5 +334,10 @@ if __name__ == '__main__':
     for i in range(num_workers):
         thread = threading.Thread(target=worker, daemon=True, name=f"Worker-{i+1}")
         thread.start()
+
+    if ENABLE_JOB_LOGGING:
+        logger.info(f"Starting Flask server with {num_workers} workers.")
+    else:
+        print("Job logging disabled via config.")
 
     app.run(debug=True, host='0.0.0.0') # Run on all available interfaces
