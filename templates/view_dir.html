@@ -26,6 +26,7 @@
     <!-- Job Queue Sidebar (Left) -->
     <div class="col-md-3 sidebar-sticky">
         <h4>Job Queue</h4>
+        <button id="clear-queue-btn" class="btn btn-danger btn-sm mb-3">Clear Queued Jobs</button>
         <div id="job-queue-container" class="list-group">
             <!-- Jobs will be dynamically loaded here -->
             <h5>Active Jobs</h5>
@@ -111,4 +112,165 @@
 {% endblock %}
 
 {% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+
+    // --- Modal Handling ---
+    var imageModal = document.getElementById('imageModal');
+    var generateForm = document.getElementById('generateForm');
+    var modalMessage = document.getElementById('modalMessage');
+
+    imageModal.addEventListener('show.bs.modal', function (event) {
+        var button = event.relatedTarget;
+        var imagePath = button.getAttribute('data-image-path');
+        var imageName = button.getAttribute('data-image-name');
+        var imageSrc = button.getAttribute('data-image-src');
+
+        var modalTitle = imageModal.querySelector('.modal-title');
+        var modalImagePreview = imageModal.querySelector('#modalImagePreview');
+        var modalImageName = imageModal.querySelector('#modalImageName');
+        var modalImagePathInput = imageModal.querySelector('#modalImagePath');
+
+        modalTitle.textContent = 'Generate Video for: ' + imageName;
+        modalImagePreview.src = imageSrc;
+        modalImageName.textContent = imageName;
+        modalImagePathInput.value = imagePath;
+        modalMessage.textContent = ''; // Clear previous messages
+    });
+
+    generateForm.addEventListener('submit', function(event) {
+        event.preventDefault();
+        modalMessage.textContent = 'Submitting job...';
+        modalMessage.className = 'alert alert-info';
+
+        fetch('{{ url_for('generate') }}', {
+            method: 'POST',
+            body: new FormData(generateForm)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.job_id) {
+                modalMessage.textContent = `Job ${data.job_id} queued successfully!`;
+                modalMessage.className = 'alert alert-success';
+                fetchJobs(); // Refresh job list
+                // Optionally close modal after a short delay
+                // setTimeout(() => bootstrap.Modal.getInstance(imageModal).hide(), 1500);
+            } else {
+                modalMessage.textContent = 'Error: ' + (data.error || 'Unknown error');
+                modalMessage.className = 'alert alert-danger';
+            }
+        })
+        .catch(error => {
+            console.error('Error submitting job:', error);
+            modalMessage.textContent = 'Error submitting job. See console for details.';
+            modalMessage.className = 'alert alert-danger';
+        });
+    });
+
+    // --- Job Status Polling ---
+    const activeJobsList = document.getElementById('active-jobs-list');
+    const finishedJobsList = document.getElementById('finished-jobs-list');
+
+    function fetchJobs() {
+        fetch('{{ url_for('api_jobs') }}')
+            .then(response => response.json())
+            .then(data => {
+                activeJobsList.innerHTML = ''; // Clear current list
+                finishedJobsList.innerHTML = ''; // Clear current list
+                let hasActive = false;
+                let hasFinished = false;
+
+                // Sort job IDs for consistent display order (optional)
+                const sortedJobIds = Object.keys(data).sort();
+
+                sortedJobIds.forEach(jobId => {
+                    const job = data[jobId];
+                    const listItem = document.createElement('div');
+                    listItem.className = 'list-group-item list-group-item-action flex-column align-items-start';
+                    let badgeClass = 'bg-secondary'; // Default/queued
+                    let statusText = job.status;
+                    let outputHtml = '';
+
+                    if (job.status === 'running') {
+                        badgeClass = 'bg-primary';
+                    } else if (job.status === 'completed') {
+                        badgeClass = 'bg-success';
+                        // Attempt to extract output file name if available
+                        const lastOutput = job.output && job.output.length > 0 ? job.output[job.output.length - 1] : '';
+                        if (lastOutput && (lastOutput.toLowerCase().endsWith('.mp4') || lastOutput.toLowerCase().endsWith('.webm'))) {
+                             outputHtml = `<small class="text-muted">Output: ${lastOutput.split(/[\\/]/).pop()}</small><br>`; // Show only filename
+                        } else if (lastOutput.includes('Output File:')) {
+                            outputHtml = `<small class="text-muted">${lastOutput}</small><br>`; 
+                        }
+                    } else if (job.status === 'failed' || job.status === 'failed_will_retry') {
+                        badgeClass = 'bg-danger';
+                        const lastError = job.output && job.output.length > 0 ? job.output[job.output.length - 1] : 'Unknown error';
+                        outputHtml = `<small class="text-danger">Error: ${lastError.substring(0, 100)}...</small><br>`; // Truncate long errors
+                    }
+
+                    listItem.innerHTML = `
+                        <div class="d-flex w-100 justify-content-between">
+                            <h6 class="mb-1">${job.params.prompt || 'No Prompt'}</h6>
+                            <small><span class="badge ${badgeClass}">${statusText}</span></small>
+                        </div>
+                        <p class="mb-1"><small>Image: ${job.params.image_path.split(/[\\/]/).pop()} | Duration: ${job.params.duration}s</small></p>
+                        ${outputHtml}
+                        <small class="text-muted">Job ID: ${jobId.substring(0, 8)}...</small>
+                    `;
+
+                    if (['queued', 'running', 'failed_will_retry'].includes(job.status)) {
+                         activeJobsList.appendChild(listItem);
+                         hasActive = true;
+                    } else { // completed or failed (and not retrying)
+                         finishedJobsList.appendChild(listItem);
+                         hasFinished = true;
+                    }
+                });
+
+                if (!hasActive) {
+                    activeJobsList.innerHTML = '<p class="text-muted p-2">No active jobs.</p>';
+                }
+                if (!hasFinished) {
+                    finishedJobsList.innerHTML = '<p class="text-muted p-2">No finished jobs yet.</p>';
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching jobs:', error);
+                activeJobsList.innerHTML = '<p class="text-danger p-2">Error loading jobs.</p>';
+                finishedJobsList.innerHTML = '<p class="text-danger p-2">Error loading jobs.</p>';
+            });
+    }
+
+    // Initial fetch and set interval
+    fetchJobs();
+    setInterval(fetchJobs, 5000); // Poll every 5 seconds
+
+    // --- Clear Queue Button --- 
+    const clearQueueBtn = document.getElementById('clear-queue-btn');
+    if (clearQueueBtn) {
+        clearQueueBtn.addEventListener('click', function() {
+            if (confirm('Are you sure you want to remove all currently queued jobs? Running jobs will not be affected.')) {
+                fetch('{{ url_for('api_clear_queue') }}', {
+                    method: 'POST',
+                     headers: {
+                        'Content-Type': 'application/json'
+                        // Add CSRF token header if needed in your Flask setup
+                    }
+                    // No body needed for this request unless you add CSRF
+                })
+                .then(response => response.json())
+                .then(data => {
+                    alert(data.message || 'Queue clear request sent.');
+                    fetchJobs(); // Refresh job list immediately
+                })
+                .catch(error => {
+                    console.error('Error clearing queue:', error);
+                    alert('Error sending clear queue request. See console.');
+                });
+            }
+        });
+    }
+
+});
+</script>
 {% endblock %}

@@ -343,7 +343,8 @@ def main():
             print("\nGeneration completed successfully!")
             print(f"Video duration: {duration} seconds")
             print(f"Video file: {output_path}")
-            
+            if output_path:
+                print(f"OUTPUT_FILE_PATH::{output_path}") 
         except (KeyError, IndexError) as e:
             print(f"Error parsing API response: {str(e)}")
             print("Response:", json.dumps(response_data, indent=2))
@@ -371,6 +372,9 @@ def main():
             output_path = download_result(args.api_url, video_url, args.output_dir)
             print("\nGeneration completed successfully!")
             print(f"Video file: {output_path}")
+            if output_path:
+                print(f"OUTPUT_FILE_PATH::{output_path}")
+            
 
 
 if __name__ == "__main__":

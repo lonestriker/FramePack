@@ -71,6 +71,7 @@ server_status = {
     for server in API_SERVERS
 }
 server_lock = threading.Lock() # Keep the lock
+queue_lock = threading.Lock() # Lock for queue operations
 
 # --- Routes ---
 
@@ -156,6 +157,50 @@ def api_server_status():
             status_copy[server]['next_retry_available_in_seconds'] = max(0, status['next_retry_time'] - current_time)
             status_copy[server]['next_retry_time_readable'] = time.ctime(status['next_retry_time']) if status['next_retry_time'] > 0 else "N/A"
         return jsonify(status_copy)
+
+# --- New API Route for Clearing Queue --- 
+@app.route('/api/clear_queue', methods=['POST'])
+def api_clear_queue():
+    cleared_count = 0
+    with queue_lock:
+        temp_queue = []
+        # Drain the queue
+        while not job_queue.empty():
+            try:
+                temp_queue.append(job_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        # Process drained items
+        kept_jobs = []
+        global job_status # Ensure we modify the global dict
+        jobs_to_remove = []
+
+        for job_id, params in temp_queue:
+            current_status = job_status.get(job_id, {}).get('status')
+            # Only keep jobs that are NOT queued or failed_will_retry
+            # This avoids race conditions if a job started running just as we cleared
+            if current_status not in ['queued', 'failed_will_retry']:
+                 kept_jobs.append((job_id, params))
+            else:
+                # Mark for removal from job_status dict
+                jobs_to_remove.append(job_id)
+                cleared_count += 1
+
+        # Remove cleared jobs from the status dict
+        for job_id in jobs_to_remove:
+            if job_id in job_status:
+                del job_status[job_id]
+
+        # Put back jobs that shouldn't have been cleared (e.g., already running)
+        for job_id, params in kept_jobs:
+            job_queue.put((job_id, params))
+
+    if ENABLE_JOB_LOGGING:
+        logger.info(f"Queue Cleared - Removed {cleared_count} queued/retry jobs.")
+    print(f"Cleared {cleared_count} jobs from the queue.")
+    return jsonify({'message': f'Cleared {cleared_count} jobs from the queue.', 'cleared_count': cleared_count}), 200
+
 
 # --- Route to serve images safely ---
 @app.route('/images/<path:filename>')
@@ -261,18 +306,15 @@ def worker():
                          print(f"Server {assigned_server} marked available after job success.")
                 print(f"Job {job_id} completed successfully on {assigned_server}. Resetting server status.")
                 if ENABLE_JOB_LOGGING:
-                    # Attempt to find output filename (heuristic, might need adjustment)
+                    # Attempt to find output filename using the explicit prefix
                     output_filename = "Unknown"
-                    for line in reversed(output_lines): # Check recent lines first
-                        if line.lower().endswith(tuple(IMAGE_EXTENSIONS)) and os.path.basename(line) != os.path.basename(params['image_path']):
-                            output_filename = line
-                            break
-                        elif 'saved to' in line.lower(): # Alternative check
+                    for line in reversed(output_lines):
+                        if line.startswith("OUTPUT_FILE_PATH::"):
                             try:
-                                output_filename = line.split('saved to')[-1].strip()
-                            except:
-                                pass # Ignore split errors
-                            break
+                                output_filename = line.split("::", 1)[1].strip()
+                                break # Found it
+                            except IndexError:
+                                pass # Ignore malformed line
                     logger.info(f"Job Success - ID: {job_id}, Server: {assigned_server}, Image: {params['image_path']}, Prompt: '{params['prompt']}', Duration: {params['duration']}s, Output File: {output_filename}")
 
         except Exception as e:
