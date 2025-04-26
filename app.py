@@ -9,6 +9,7 @@ import json
 import math
 import logging
 from datetime import datetime
+import random
 
 app = Flask(__name__)
 
@@ -24,9 +25,11 @@ def load_config():
             config = json.load(f)
             if not isinstance(config.get('API_SERVERS'), list):
                 raise ValueError("'API_SERVERS' key missing or not a list in config.json")
-            # Add default for logging flag if missing
+            # Add defaults for flags if missing
             if 'ENABLE_JOB_LOGGING' not in config:
                  config['ENABLE_JOB_LOGGING'] = True
+            if 'USE_RANDOM_SEED' not in config:
+                config['USE_RANDOM_SEED'] = True
             return config
     except FileNotFoundError:
         print("ERROR: config.json not found. Please create it based on config.json.example.")
@@ -38,6 +41,7 @@ def load_config():
 config_data = load_config()
 API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
 ENABLE_JOB_LOGGING = config_data.get('ENABLE_JOB_LOGGING', True) # Get logging flag
+USE_RANDOM_SEED = config_data.get('USE_RANDOM_SEED', True) # Get random seed flag
 
 # --- Finalize Logging Setup (after config load) ---
 if ENABLE_JOB_LOGGING:
@@ -114,26 +118,40 @@ def generate():
     image_path = request.form.get('image_path')
     prompt = request.form.get('prompt', '')
     duration = request.form.get('duration', DEFAULT_DURATION, type=int)
+    # Get seed from form, default to None if not provided or invalid
+    try:
+        seed = request.form.get('seed', type=int)
+    except ValueError:
+        seed = None # Handle cases where seed is not a valid integer
 
     if not image_path or not os.path.isfile(image_path):
         return jsonify({'error': 'Invalid image path'}), 400
 
     # Validate duration
     if not 1 <= duration <= MAX_DURATION:
-         # Use default or return error, returning error is clearer for API
         return jsonify({'error': f'Invalid duration. Must be between 1 and {MAX_DURATION}'}), 400
+
+    # Determine final seed based on config and provided value
+    final_seed = -1 # Default seed if not random and not provided
+    if USE_RANDOM_SEED and seed is None:
+        final_seed = random.randint(0, 2**32 - 1) # Generate random seed
+    elif seed is not None:
+        final_seed = seed # Use provided seed
 
     job_id = str(uuid.uuid4())
     params = {
         'image_path': image_path,
         'prompt': prompt,
         'duration': duration,
+        'seed': final_seed # Add seed to params
     }
     job_status[job_id] = {'status': 'queued', 'output': [], 'params': params}
     job_queue.put((job_id, params))
 
     if ENABLE_JOB_LOGGING:
-        logger.info(f"Job Submitted - ID: {job_id}, Image: {image_path}, Prompt: '{params['prompt']}', Duration: {params['duration']}s")
+        filename = os.path.basename(image_path)
+        # Add seed to log message
+        logger.info(f"Job Submitted - ID: {job_id}, Image: {filename}, Prompt: '{params['prompt']}', Duration: {params['duration']}s, Seed: {final_seed}")
 
     return jsonify({'job_id': job_id, 'status': 'queued'}), 202 # 202 Accepted
 
@@ -193,7 +211,8 @@ def worker():
                      server_status[assigned_server]['available'] = False # Mark as busy temporarily
                      print(f"Job {job_id} assigned to server {assigned_server}")
                      if ENABLE_JOB_LOGGING:
-                        logger.info(f"Job Assigned - ID: {job_id} assigned to Server: {assigned_server}")
+                        # Add prompt to Job Assigned log
+                        logger.info(f"Job Assigned - ID: {job_id}, Server: {assigned_server}, Prompt: '{params['prompt']}'")
                 else:
                      # Check if any server is potentially available but waiting for backoff
                      waiting_servers = any(current_time < s['next_retry_time'] for s in server_status.values() if s['next_retry_time'] > 0)
@@ -261,19 +280,21 @@ def worker():
                          print(f"Server {assigned_server} marked available after job success.")
                 print(f"Job {job_id} completed successfully on {assigned_server}. Resetting server status.")
                 if ENABLE_JOB_LOGGING:
-                    # Attempt to find output filename (heuristic, might need adjustment)
+                    # Extract output filename based on api-client.py's specific output format
                     output_filename = "Unknown"
-                    for line in reversed(output_lines): # Check recent lines first
-                        if line.lower().endswith(tuple(IMAGE_EXTENSIONS)) and os.path.basename(line) != os.path.basename(params['image_path']):
-                            output_filename = line
-                            break
-                        elif 'saved to' in line.lower(): # Alternative check
-                            try:
-                                output_filename = line.split('saved to')[-1].strip()
-                            except:
-                                pass # Ignore split errors
-                            break
-                    logger.info(f"Job Success - ID: {job_id}, Server: {assigned_server}, Image: {params['image_path']}, Prompt: '{params['prompt']}', Duration: {params['duration']}s, Output File: {output_filename}")
+                    output_prefix = "Video file: "
+                    for line in output_lines:
+                        stripped_line = line.strip()
+                        if stripped_line.startswith(output_prefix):
+                            full_path = stripped_line[len(output_prefix):].strip()
+                            if full_path: # Ensure we got a path
+                                output_filename = os.path.basename(full_path)
+                                break # Found it
+
+                    # Store the found (or default 'Unknown') filename
+                    job_status[job_id]['output_filename'] = output_filename
+                    # Add prompt to Job Completed log
+                    logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}'")
 
         except Exception as e:
             job_failed = True
