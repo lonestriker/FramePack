@@ -5,5 +5,9 @@
   ],
   // Optional: Enable detailed logging of job events to files in the 'logs' directory.
   // Defaults to true if omitted.
-  "ENABLE_JOB_LOGGING": true 
+  "ENABLE_JOB_LOGGING": true,
+  // Optional: Generate a random seed if none is provided in the request.
+  // If false, a seed must be provided or the default (-1) will be used.
+  // Defaults to true if omitted.
+  "USE_RANDOM_SEED": true
 }

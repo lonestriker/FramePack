@@ -240,7 +240,8 @@ def worker():
                 '--api_url', assigned_server,
                 '--prompt', params['prompt'],
                 '--length', str(params['duration']),
-                '--image', params['image_path']
+                '--image', params['image_path'],
+                '--seed', str(params['seed'])
             ]
 
             process = subprocess.Popen(command,
@@ -293,8 +294,8 @@ def worker():
 
                     # Store the found (or default 'Unknown') filename
                     job_status[job_id]['output_filename'] = output_filename
-                    # Add prompt to Job Completed log
-                    logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}'")
+                    # Add prompt and seed to Job Completed log
+                    logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}', Seed: {params['seed']}")
 
         except Exception as e:
             job_failed = True
