@@ -37,6 +37,30 @@
             transform: translateY(-2px);
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* Tailwind shadow-lg */
         }
+        /* Style for selected image cards */
+        .image-selected {
+            border: 3px solid #4f46e5; /* Indigo border */
+            box-shadow: 0 0 0 3px #4f46e5; /* Indigo glow */
+            position: relative; /* Needed for potential overlay */
+        }
+        /* Optional: Add a checkmark overlay */
+        .image-selected::after {
+            content: '✓';
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background-color: #4f46e5;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
     </style>
     {% block head %}{% endblock %}
 </head>

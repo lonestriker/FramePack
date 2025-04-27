@@ -35,11 +35,17 @@
              </form>
         </div>
         
-        <!-- Directory Display (Shown when directory is selected) -->
+        <!-- Directory Display & Batch Toggle (Shown when directory is selected) -->
         {% if directory %}
         <div class="bg-indigo-100 border border-indigo-200 p-3 rounded-lg shadow-sm mb-5 flex justify-between items-center text-sm"> <!-- Reduced padding/margin, added text-sm -->
             <span class="text-indigo-800">Current Directory: <code class="bg-indigo-200 text-indigo-900 px-1.5 py-0.5 rounded text-xs">{{ directory }}</code></span> <!-- Adjusted code style -->
-            <a href="{{ url_for('index') }}" class="text-xs bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-2 rounded-md transition duration-150 ease-in-out">Change Directory</a> <!-- Adjusted size -->
+            <div class="flex items-center space-x-2">
+                 <!-- Batch Select Toggle Button -->
+                 <button id="batch-select-toggle-btn" onclick="toggleBatchSelectMode()" class="text-xs bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-2 rounded-md transition duration-150 ease-in-out">
+                     Enable Batch Select
+                 </button>
+                 <a href="{{ url_for('index') }}" class="text-xs bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-2 rounded-md transition duration-150 ease-in-out">Change Directory</a> <!-- Adjusted size -->
+            </div>
         </div>
         {% endif %}
 
@@ -55,20 +61,20 @@
                  <div class="text-gray-600 mt-0 group-open:animate-fadeIn border-t border-gray-200 p-4 text-sm"> <!-- Added text-sm -->
                      <form id="optionsForm" class="space-y-3"> <!-- Reduced spacing -->
                          <div>
-                             <label for="opt-prompt" class="block text-xs font-medium text-gray-700 mb-1">Default Prompt</label> <!-- Reduced size -->
-                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">{{ options.prompt }}</textarea>
+                             <label for="opt-prompt" class="block text-xs font-medium text-gray-700 mb-1">Default Prompt:</label> <!-- Reduced size -->
+                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">{{ options.prompt }}</textarea> <!-- Reduced rows -->
                          </div>
                          <div>
-                             <label for="opt-duration" class="block text-xs font-medium text-gray-700 mb-1">Default Duration (seconds)</label> <!-- Reduced size -->
+                             <label for="opt-duration" class="block text-xs font-medium text-gray-700 mb-1">Default Duration (seconds):</label> <!-- Reduced size -->
                              <input type="number" id="opt-duration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
                          </div>
-                         <div class="flex items-center pt-1"> 
-                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" {% if options.use_teacache %}checked{% endif %} class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                             <label for="opt-use_teacache" class="ml-2 block text-xs text-gray-900">Use TeaCache (Recommended)</label> <!-- Reduced size -->
+                         <div class="flex items-center pt-1"> <!-- Reduced padding -->
+                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" {% if options.use_teacache %}checked{% endif %}>
+                             <label for="opt-use_teacache" class="ml-2 block text-xs text-gray-900">Use TeaCache (Default)</label> <!-- Reduced size -->
                          </div>
-                         <div class="flex justify-end items-center space-x-3 pt-2"> 
-                             <span id="options-save-status" class="text-xs text-green-600 font-medium"></span> <!-- Reduced size -->
-                             <button type="button" onclick="saveOptions()" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Options</button> <!-- Reduced size/padding -->
+                         <div class="flex justify-end items-center space-x-3 pt-2"> <!-- Reduced padding -->
+                             <span id="options-save-status" class="text-sm"></span> <!-- Status message -->
+                             <button type="button" onclick="saveOptions()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Defaults</button> <!-- Adjusted size -->
                          </div>
                      </form>
                  </div>
@@ -87,28 +93,41 @@
                  <div class="text-gray-600 mt-0 group-open:animate-fadeIn border-t border-gray-200 p-4 text-sm"> 
                      <form id="configForm" class="space-y-3"> 
                          <div>
-                             <label for="cfg-api-servers" class="block text-xs font-medium text-gray-700 mb-1">API Servers (one URL per line)</label> 
-                             <textarea id="cfg-api-servers" name="api_servers" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"></textarea>
-                             <p class="mt-1 text-xs text-gray-500">Changing servers updates where new jobs are sent. Restart app to change worker count.</p>
+                             <label for="cfg-api-servers" class="block text-xs font-medium text-gray-700 mb-1">API Server URLs (one per line):</label> 
+                             <textarea id="cfg-api-servers" name="api_servers" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"></textarea>
                          </div>
                          <!-- Add other config options here if needed in the future -->
                          <div class="flex justify-end items-center space-x-3 pt-2"> 
-                             <span id="config-save-status" class="text-xs text-green-600 font-medium"></span> 
-                             <button type="button" onclick="saveConfig()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Configuration</button> 
+                             <span id="config-save-status" class="text-xs"></span> <!-- Status message -->
+                             <button type="button" onclick="saveConfig()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Config</button> 
                          </div>
                      </form>
                  </div>
             </details>
         </div>
 
+        <!-- Selection Controls (only show if images exist AND batch mode is active) -->
+        {% if images %}
+        <div id="selection-controls" class="bg-gray-50 p-3 rounded-lg shadow-sm mb-4 flex justify-between items-center hidden"> <!-- Initially hidden -->
+            <div class="flex items-center space-x-3">
+                <button id="select-all-btn" onclick="toggleSelectAll()" class="text-xs bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-3 rounded-md transition duration-150 ease-in-out">Select All</button>
+                <span id="selection-count" class="text-xs text-gray-600">0 images selected</span>
+            </div>
+            <div class="flex items-center space-x-3">
+                 <span id="queue-status-msg" class="text-xs text-blue-600"></span>
+                 <button id="queue-selected-btn" onclick="queueSelected()" class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold py-1 px-3 rounded-md transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed" disabled>Queue Selected</button>
+            </div>
+        </div>
+        {% endif %}
 
         <!-- Image Grid -->
         {% if images %}
-            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"> <!-- Adjusted columns/gap -->
+            <div id="image-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"> <!-- Added id -->
                 {% for image in images %}
-                <!-- Removed fixed height, adjusted padding/flex for image card -->
-                <div class="bg-white rounded-lg shadow-md overflow-hidden cursor-pointer flex flex-col items-center justify-start card-hover-effect" 
-                     onclick="setupModal('{{ image.path | e }}', '{{ image.name | e }}')">
+                <!-- Added data-image-path, changed onclick to handleImageClick -->
+                <div class="image-card bg-white rounded-lg shadow-md overflow-hidden cursor-pointer flex flex-col items-center justify-start card-hover-effect" 
+                     data-image-path="{{ image.path | e }}"
+                     onclick="handleImageClick(this, '{{ image.path | e }}', '{{ image.name | e }}')">
                     <!-- Adjusted image container: aspect ratio and padding -->
                     <div class="w-full aspect-square flex items-center justify-center overflow-hidden p-1 bg-gray-100"> 
                         <img src="{{ url_for('serve_image', filename=image.path) }}" alt="{{ image.name }}" class="max-h-full max-w-full object-contain"> 
@@ -210,6 +229,201 @@
     const runQueueBtn = document.getElementById('run-queue-btn');
     const pauseQueueBtn = document.getElementById('pause-queue-btn');
     const clearQueueBtn = document.getElementById('clear-queue-btn');
+    const selectAllBtn = document.getElementById('select-all-btn');
+    const queueSelectedBtn = document.getElementById('queue-selected-btn');
+    const selectionCountSpan = document.getElementById('selection-count');
+    const queueStatusMsg = document.getElementById('queue-status-msg');
+    const imageGrid = document.getElementById('image-grid'); // Get image grid container
+    const batchSelectToggleBtn = document.getElementById('batch-select-toggle-btn');
+    const selectionControlsDiv = document.getElementById('selection-controls');
+
+    // --- State Variables ---
+    let batchSelectModeActive = false;
+    const selectedImagePaths = new Set();
+
+    // --- Batch Select Mode Toggle ---
+    function toggleBatchSelectMode() {
+        batchSelectModeActive = !batchSelectModeActive;
+
+        if (batchSelectModeActive) {
+            // Entering batch mode
+            if (batchSelectToggleBtn) {
+                batchSelectToggleBtn.textContent = 'Disable Batch Select';
+                batchSelectToggleBtn.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                batchSelectToggleBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+            }
+            if (selectionControlsDiv) {
+                selectionControlsDiv.classList.remove('hidden');
+            }
+            // Ensure UI is updated (buttons might need enabling/disabling)
+            updateSelectionUI(); 
+        } else {
+            // Exiting batch mode
+            if (batchSelectToggleBtn) {
+                batchSelectToggleBtn.textContent = 'Enable Batch Select';
+                batchSelectToggleBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
+                batchSelectToggleBtn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+            }
+            if (selectionControlsDiv) {
+                selectionControlsDiv.classList.add('hidden');
+            }
+            // Clear selection state and visuals
+            selectedImagePaths.clear();
+            if (imageGrid) {
+                imageGrid.querySelectorAll('.image-card.image-selected').forEach(card => {
+                    card.classList.remove('image-selected');
+                });
+            }
+            updateSelectionUI(); // Reset counts and button states
+        }
+    }
+
+    // --- Image Click Handling ---
+    function handleImageClick(cardElement, imagePath, imageName) {
+        if (batchSelectModeActive) {
+            toggleImageSelection(cardElement);
+        } else {
+            setupModal(imagePath, imageName);
+        }
+    }
+
+    // --- Selection State & UI ---
+    function updateSelectionUI() {
+        const totalImages = imageGrid ? imageGrid.querySelectorAll('.image-card').length : 0;
+        const selectedCount = selectedImagePaths.size;
+
+        // Update count display
+        if (selectionCountSpan) {
+            selectionCountSpan.textContent = `${selectedCount} image${selectedCount !== 1 ? 's' : ''} selected`;
+        }
+
+        // Update "Queue Selected" button state
+        if (queueSelectedBtn) {
+            queueSelectedBtn.disabled = selectedCount === 0;
+        }
+
+        // Update "Select All" button text
+        if (selectAllBtn) {
+            if (totalImages > 0 && selectedCount === totalImages) {
+                selectAllBtn.textContent = 'Deselect All';
+            } else {
+                selectAllBtn.textContent = 'Select All';
+            }
+        }
+    }
+
+    function toggleImageSelection(cardElement) {
+        const imagePath = cardElement.dataset.imagePath;
+        if (!imagePath) return;
+
+        if (selectedImagePaths.has(imagePath)) {
+            selectedImagePaths.delete(imagePath);
+            cardElement.classList.remove('image-selected');
+        } else {
+            selectedImagePaths.add(imagePath);
+            cardElement.classList.add('image-selected');
+        }
+        updateSelectionUI();
+    }
+
+    function toggleSelectAll() {
+        if (!imageGrid) return;
+        const allCards = imageGrid.querySelectorAll('.image-card');
+        const totalImages = allCards.length;
+        const selectedCount = selectedImagePaths.size;
+        const selectAll = selectedCount < totalImages; // If not all are selected, we should select all
+
+        allCards.forEach(card => {
+            const imagePath = card.dataset.imagePath;
+            if (!imagePath) return;
+
+            const isSelected = selectedImagePaths.has(imagePath);
+
+            if (selectAll && !isSelected) {
+                selectedImagePaths.add(imagePath);
+                card.classList.add('image-selected');
+            } else if (!selectAll && isSelected) {
+                selectedImagePaths.delete(imagePath);
+                card.classList.remove('image-selected');
+            }
+        });
+        updateSelectionUI();
+    }
+
+    async function queueSelected() {
+        if (selectedImagePaths.size === 0) return;
+
+        const pathsToQueue = Array.from(selectedImagePaths); // Copy the set
+        const defaultPrompt = document.getElementById('opt-prompt').value;
+        const defaultDuration = document.getElementById('opt-duration').value;
+        const numToQueue = pathsToQueue.length;
+
+        // Disable buttons and show status
+        if (queueSelectedBtn) queueSelectedBtn.disabled = true;
+        if (selectAllBtn) selectAllBtn.disabled = true;
+        if (queueStatusMsg) queueStatusMsg.textContent = `Queuing ${numToQueue} image${numToQueue !== 1 ? 's' : ''}...`;
+
+        const submissionPromises = pathsToQueue.map(imagePath => {
+            const formData = new FormData();
+            formData.append('image_path', imagePath);
+            formData.append('prompt', defaultPrompt);
+            formData.append('duration', defaultDuration);
+            // Note: use_teacache is implicitly handled by app_options in the backend
+
+            return fetch("{{ url_for('generate') }}", {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (!data.job_id) {
+                    console.error(`Failed to queue ${imagePath}: ${data.error || 'Unknown error'}`);
+                    return { success: false, path: imagePath, error: data.error || 'Unknown error' };
+                }
+                return { success: true, path: imagePath, jobId: data.job_id };
+            })
+            .catch(error => {
+                console.error(`Error queuing ${imagePath}:`, error);
+                return { success: false, path: imagePath, error: String(error) };
+            });
+        });
+
+        try {
+            const results = await Promise.all(submissionPromises);
+            const successfulJobs = results.filter(r => r.success).length;
+            const failedJobs = numToQueue - successfulJobs;
+
+            if (queueStatusMsg) {
+                 if (failedJobs > 0) {
+                     queueStatusMsg.textContent = `Queued ${successfulJobs} image(s). ${failedJobs} failed.`;
+                 } else {
+                     queueStatusMsg.textContent = `Queued ${successfulJobs} image(s) successfully.`;
+                 }
+                 // Clear message after a delay
+                 setTimeout(() => { if(queueStatusMsg) queueStatusMsg.textContent = ''; }, 4000);
+            }
+
+            // Clear selection visually and internally
+            if (imageGrid) {
+                imageGrid.querySelectorAll('.image-card.image-selected').forEach(card => {
+                    card.classList.remove('image-selected');
+                });
+            }
+            selectedImagePaths.clear();
+
+        } catch (error) {
+            // This catch block might not be strictly necessary with Promise.all
+            // individual errors are handled in the .catch within the map
+            console.error("Error during batch queueing:", error);
+             if (queueStatusMsg) queueStatusMsg.textContent = 'An error occurred during queuing.';
+             setTimeout(() => { if(queueStatusMsg) queueStatusMsg.textContent = ''; }, 4000);
+        } finally {
+            // Re-enable buttons and update UI
+            if (selectAllBtn) selectAllBtn.disabled = false;
+            updateSelectionUI(); // This will re-enable queue button if needed (though selection is now clear)
+            fetchJobStatus(); // Refresh job list
+        }
+    }
 
     function setupModal(imagePath, imageName) {
         modalImagePath.value = imagePath;
@@ -655,6 +869,9 @@
     fetchServerStatus();
     setInterval(fetchJobStatus, 5000); // Refresh jobs every 5 seconds
     setInterval(fetchServerStatus, 10000); // Refresh servers every 10 seconds
+
+    // Initial UI update for selection (ensures buttons are correctly disabled initially)
+    updateSelectionUI();
 
     // Close modal on escape key
     document.addEventListener('keydown', function (event) {
