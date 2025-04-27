@@ -33,6 +33,11 @@ def parse_args():
     cancel_group = parser.add_argument_group('Cancellation Option')
     cancel_group.add_argument("--cancel", type=str, metavar="JOB_ID", help="Cancel a running job by its ID")
 
+    # Group for listing jobs
+    list_group = parser.add_argument_group('Listing Option')
+    list_group.add_argument("--list-jobs", action="store_true", help="List all jobs on the server")
+
+
     return parser.parse_args()
 
 
@@ -354,8 +359,63 @@ def save_base64_video(base64_data, output_dir, seed, prompt):
         sys.exit(1)
 
 
+def list_jobs(api_url):
+    """Fetch and display the list of jobs from the API"""
+    try:
+        print(f"Fetching job list from {api_url}/jobs")
+        response = requests.get(f"{api_url}/jobs", timeout=30)
+        
+        if response.status_code == 200:
+            jobs_list = response.json()
+            if not jobs_list:
+                print("No jobs found on the server.")
+                return True
+                
+            print("\n--- Job List ---")
+            # Sort client-side just in case server doesn't guarantee order
+            jobs_list.sort(key=lambda x: x.get("creation_time", ""), reverse=True) 
+            for job in jobs_list:
+                print(f"  ID: {job.get('job_id', 'N/A')}")
+                print(f"    Status: {job.get('status', 'N/A')}")
+                print(f"    Progress: {job.get('progress', 0)}%")
+                print(f"    Created: {job.get('creation_time', 'N/A')}")
+                print(f"    Message: {job.get('message', '')}")
+                if job.get('video_url'):
+                    print(f"    Video URL: {job.get('video_url')}")
+                print("-" * 16)
+            return True
+        else:
+            print(f"Error: API returned status code {response.status_code} when listing jobs.")
+            print(response.text)
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching job list: {str(e)}")
+        return False
+
+
 def main():
     args = parse_args()
+
+    # Handle mutually exclusive options
+    action_count = sum([args.cancel is not None, args.list_jobs, (args.prompt is not None or args.image is not None or args.url is not None)])
+    if action_count > 1:
+        print("Error: --cancel, --list-jobs, and generation options (like --prompt) are mutually exclusive.")
+        sys.exit(1)
+    if action_count == 0:
+         print("Error: No action specified. Use --prompt/--image/--url for generation, --list-jobs, or --cancel.")
+         sys.exit(1)
+
+
+    # Handle list jobs request
+    if args.list_jobs:
+        if not args.api_url:
+             print("Error: --api_url is required for listing jobs.")
+             sys.exit(1)
+        if list_jobs(args.api_url):
+            sys.exit(0)
+        else:
+            sys.exit(1)
 
     # Handle cancellation request first
     if args.cancel:

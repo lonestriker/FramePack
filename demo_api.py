@@ -38,6 +38,7 @@ from diffusers_helper.bucket_tools import find_nearest_bucket
 
 import base64
 import asyncio
+import datetime
 
 # Custom exception for cancellation
 class JobCancelledError(Exception):
@@ -278,6 +279,7 @@ async def generate_endpoint(
         "progress": 0,
         "message": "Job queued, waiting to start",
         "video_url": None,
+        "creation_time": datetime.datetime.utcnow().isoformat(), # Add creation time
         "complete_event": asyncio.Event(),
         "cancel_event": asyncio.Event() # Add cancellation event
     }
@@ -434,6 +436,7 @@ async def generate_wait_endpoint(
         "message": "Job queued, waiting to start",
         "video_url": None,
         "video_data": None,  # We'll store the video data here
+        "creation_time": datetime.datetime.utcnow().isoformat(), # Add creation time
         "complete_event": asyncio.Event(),  # Event to signal completion
         "cancel_event": asyncio.Event() # Add cancellation event
     }
@@ -776,6 +779,25 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
         # Note: complete_event is set in the calling function (process_video_generation or generate_video)
+
+@app.get("/jobs")
+async def list_all_jobs():
+    """Returns a list of all current jobs and their status."""
+    job_list = []
+    for job_id, job_data in jobs.items():
+        # Exclude internal objects like events for the response
+        summary = {
+            "job_id": job_data.get("job_id"),
+            "status": job_data.get("status"),
+            "progress": job_data.get("progress"),
+            "message": job_data.get("message"),
+            "video_url": job_data.get("video_url"),
+            "creation_time": job_data.get("creation_time")
+        }
+        job_list.append(summary)
+    # Sort by creation time, newest first
+    job_list.sort(key=lambda x: x.get("creation_time", ""), reverse=True)
+    return job_list
 
 if __name__ == "__main__":
     uvicorn.run(app, host=args.server, port=args.port)
