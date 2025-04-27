@@ -30,8 +30,9 @@ def parse_args():
                         help="Disable TeaCache (slower generation but may improve hand/finger quality)")
 
     # Group for cancellation
-    cancel_group = parser.add_argument_group('Cancellation Option')
+    cancel_group = parser.add_argument_group('Cancellation Options')
     cancel_group.add_argument("--cancel", type=str, metavar="JOB_ID", help="Cancel a running job by its ID")
+    cancel_group.add_argument("--cancel-current", action="store_true", help="Cancel the currently active job on the server")
 
     # Group for listing jobs
     list_group = parser.add_argument_group('Listing Option')
@@ -224,6 +225,33 @@ def cancel_job(api_url, job_id):
         return False
 
 
+def cancel_current_job(api_url):
+    """Send a request to cancel the currently active job"""
+    try:
+        print(f"Sending request to cancel current active job to {api_url}/cancel-current")
+        response = requests.post(f"{api_url}/cancel-current", timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"Cancellation request sent successfully. Server response for job '{result.get('job_id', 'N/A')}': Status={result.get('status', 'N/A')}, Message='{result.get('message', 'N/A')}'")
+            return True
+        elif response.status_code == 404:
+            print(f"Error: Server reported no currently active job.")
+            return False
+        elif response.status_code == 400:
+             print(f"Error: Current job could not be cancelled (likely already completed, failed, or cancelled).")
+             print(response.text)
+             return False
+        else:
+            print(f"Error: API returned status code {response.status_code} during current job cancellation.")
+            print(response.text)
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending cancel-current request: {str(e)}")
+        return False
+
+
 def poll_job_status(api_url, job_id, poll_interval):
     """Poll the job status until completion or failure, allowing cancellation."""
     print(f"Polling job status every {poll_interval} seconds... Press Ctrl+C to attempt cancellation.")
@@ -398,12 +426,17 @@ def main():
     args = parse_args()
 
     # Handle mutually exclusive options
-    action_count = sum([args.cancel is not None, args.list_jobs, (args.prompt is not None or args.image is not None or args.url is not None)])
+    action_count = sum([
+        args.cancel is not None, 
+        args.list_jobs, 
+        args.cancel_current,
+        (args.prompt is not None or args.image is not None or args.url is not None) # Generation options grouped
+    ])
     if action_count > 1:
-        print("Error: --cancel, --list-jobs, and generation options (like --prompt) are mutually exclusive.")
+        print("Error: --cancel, --list-jobs, --cancel-current, and generation options (like --prompt) are mutually exclusive.")
         sys.exit(1)
     if action_count == 0:
-         print("Error: No action specified. Use --prompt/--image/--url for generation, --list-jobs, or --cancel.")
+         print("Error: No action specified. Use --prompt/--image/--url for generation, --list-jobs, --cancel JOB_ID, or --cancel-current.")
          sys.exit(1)
 
 
@@ -417,7 +450,7 @@ def main():
         else:
             sys.exit(1)
 
-    # Handle cancellation request first
+    # Handle cancel specific job request
     if args.cancel:
         if any([args.image, args.url, args.prompt, args.sync]):
              print("Error: --cancel cannot be used with generation options (--image, --url, --prompt, --sync, etc.).")
@@ -431,7 +464,18 @@ def main():
         else:
              sys.exit(1) # Failure
 
-    # --- Proceed with generation if not cancelling ---
+    # Handle cancel current job request
+    if args.cancel_current:
+        if not args.api_url:
+             print("Error: --api_url is required for cancelling the current job.")
+             sys.exit(1)
+        if cancel_current_job(args.api_url):
+             sys.exit(0) # Success
+        else:
+             sys.exit(1) # Failure
+
+
+    # --- Proceed with generation if not cancelling or listing ---
     
     # Convert no-teacache flag to use_teacache boolean
     use_teacache = not args.no_teacache

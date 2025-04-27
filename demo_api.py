@@ -68,6 +68,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 # Job status tracking
 jobs = {}
+current_active_job_id: Optional[str] = None # Track the currently processing job
 
 free_mem_gb = get_cuda_free_memory_gb(gpu)
 high_vram = free_mem_gb > 60
@@ -321,6 +322,33 @@ async def cancel_job_endpoint(job_id: str):
     # Return current status, which might be 'cancelling' or 'cancelled'
     return {"job_id": job_id, "status": jobs[job_id]["status"], "message": jobs[job_id]["message"]}
 
+@app.post("/cancel-current", status_code=200)
+async def cancel_current_job_endpoint():
+    """Cancels the currently active processing job, if any."""
+    global current_active_job_id
+    
+    active_job_id = current_active_job_id # Read the current active job ID
+    
+    if active_job_id is None:
+        raise HTTPException(status_code=404, detail="No job is currently active.")
+        
+    if active_job_id not in jobs:
+        # This case should ideally not happen if tracking is correct
+        raise HTTPException(status_code=404, detail=f"Tracked active job ID '{active_job_id}' not found in job list.")
+
+    if jobs[active_job_id]["status"] in ["completed", "failed", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Current job '{active_job_id}' is already in final state: {jobs[active_job_id]['status']}")
+
+    print(f"Received cancellation request for current active job: {active_job_id}")
+    jobs[active_job_id]["cancel_event"].set()
+    jobs[active_job_id]["status"] = "cancelling"
+    jobs[active_job_id]["message"] = "Cancellation request received for active job, attempting to stop..."
+    
+    # Optionally wait a short time
+    await asyncio.sleep(1) 
+    
+    return {"job_id": active_job_id, "status": jobs[active_job_id]["status"], "message": jobs[active_job_id]["message"]}
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "memory": f"{free_mem_gb} GB available"}
@@ -510,6 +538,7 @@ async def process_video_generation(job_id: str, input_image_array, request: Gene
 @torch.no_grad()
 def generate_video_sync(job_id: str, input_image_array, request: GenerationRequest):
     """Synchronous version of the generate_video function with cancellation checks"""
+    global current_active_job_id
     
     def check_cancel():
         """Helper function to check for cancellation"""
@@ -546,6 +575,10 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
     total_generated_latent_frames = 0  # Initialize this variable
     
     try:
+        # Mark this job as active
+        current_active_job_id = job_id
+        print(f"Job {job_id} started processing, marked as active.")
+
         # Clean GPU
         check_cancel()
         if not high_vram:
@@ -772,6 +805,10 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
             jobs[job_id]["message"] = f"Error: {str(e)}"
         
     finally:
+        # Mark job as inactive regardless of outcome
+        if current_active_job_id == job_id:
+            print(f"Job {job_id} finished processing (status: {jobs[job_id].get('status', 'unknown')}), clearing active status.")
+            current_active_job_id = None
         # Cleanup GPU memory regardless of outcome (success, fail, cancel)
         if not high_vram:
             print(f"Job {job_id} final cleanup: Unloading models.")
