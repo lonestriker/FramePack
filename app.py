@@ -12,6 +12,9 @@ from datetime import datetime
 import argparse # Import argparse
 import atexit # For saving queue on exit
 import requests # Import requests for sending cancel signal
+import sys
+import pathlib  # Add pathlib for better path handling
+import shlex  # Add shlex for proper command argument escaping
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # Needed for flashing messages and session
@@ -269,11 +272,16 @@ def index():
 
     # Handle GET request (or after redirect from POST)
     if directory:
-        if os.path.isdir(directory):
+        # Use pathlib for better path handling
+        dir_path = pathlib.Path(directory)
+        if dir_path.is_dir():
             try:
-                for fname in sorted(os.listdir(directory)): # Sort filenames
-                    if os.path.splitext(fname)[1].lower() in IMAGE_EXTENSIONS:
-                        images.append({'name': fname, 'path': os.path.join(directory, fname)})
+                for fname in sorted(os.listdir(dir_path)): 
+                    file_path = dir_path / fname
+                    if file_path.suffix.lower() in IMAGE_EXTENSIONS:
+                        # Ensure path is converted to string with forward slashes for URLs
+                        url_path = str(file_path).replace('\\', '/')
+                        images.append({'name': fname, 'path': url_path})
             except OSError as e:
                 error_message = f"Error accessing directory: {e}"
                 directory = None # Reset directory if error accessing
@@ -412,8 +420,24 @@ def generate():
     duration = request.form.get('duration', app_options['duration'], type=int) 
     use_teacache_for_job = app_options['use_teacache']
 
-    if not image_path or not os.path.isfile(image_path):
-        return jsonify({'error': 'Invalid image path'}), 400
+    try:
+        # Convert to Path object
+        path_obj = pathlib.Path(image_path)
+        normalized_image_path = str(path_obj.resolve())
+        
+        if not path_obj.is_file():
+            print(f"Path exists but is not a file: {normalized_image_path}")
+            return jsonify({'error': 'Path exists but is not a file'}), 400
+    except (TypeError, ValueError) as e:
+        print(f"Error normalizing path: {e}")
+        return jsonify({'error': f'Invalid image path: {e}'}), 400
+    except FileNotFoundError:
+        print(f"File not found: {image_path}")
+        return jsonify({'error': 'File not found'}), 400
+    
+    if not os.path.isfile(normalized_image_path):
+        print(f"Normalized path check failed: {normalized_image_path}")
+        return jsonify({'error': 'Invalid image path after normalization'}), 400
 
     # Validate duration
     if not 1 <= duration <= MAX_DURATION:
@@ -421,7 +445,7 @@ def generate():
 
     job_id = str(uuid.uuid4())
     params = {
-        'image_path': image_path,
+        'image_path': normalized_image_path,
         'prompt': prompt,
         'duration': duration,
         'use_teacache': use_teacache_for_job # Store the effective setting for this job
@@ -621,12 +645,30 @@ def api_server_status():
 def serve_image(filename):
     # IMPORTANT: Add security checks here in a real application 
     # to prevent access outside allowed directories.
-    # For now, it trusts the path given implicitly.
-    # Consider checking if the requested path starts with an allowed base path.
+    
     try:
-        return send_file(filename)
-    except FileNotFoundError:
+        # Use pathlib for better path handling
+        path_obj = pathlib.Path(filename)
+        
+        # Check if the file exists directly
+        if path_obj.is_file():
+            return send_file(str(path_obj))
+        
+        # If not found, try looking in the working directory
+        current_dir = pathlib.Path(__file__).parent.absolute()
+        potential_path = current_dir / filename
+        
+        if potential_path.is_file():
+            return send_file(str(potential_path))
+            
+        # If still not found, return 404
+        print(f"Image not found: {filename} (path_obj: {path_obj}, potential: {potential_path})")
         return "Image not found", 404
+    except Exception as e:
+        print(f"Error serving image {filename}: {e}")
+        if ENABLE_JOB_LOGGING:
+            logger.error(f"Error serving image {filename}: {e}")
+        return "Error serving image", 500
 
 # --- Route to serve results safely ---
 @app.route('/results/<path:filename>')
@@ -736,26 +778,31 @@ def worker():
         job_status[job_id]['progress'] = 0 # Reset progress when starting
         job_status[job_id]['message'] = 'Starting execution...' # Update message
         job_status[job_id]['start_time'] = datetime.utcnow().isoformat() + 'Z'  # ISO format with UTC timezone
+        job_status[job_id]['assigned_server'] = assigned_server # Store the assigned server
 
         job_failed = False
         error_message = ""
 
         try:
+            # Use pathlib for better path handling
+            image_path = pathlib.Path(params['image_path'])
+            
+            # Prepare command with proper path handling
             command = [
-                'python',
+                sys.executable,  # Use the current Python interpreter
                 'api-client.py',
                 '--api_url', assigned_server,
                 '--prompt', params['prompt'],
                 '--length', str(params['duration']),
-                '--image', params['image_path']
+                '--image', str(image_path)  # Convert Path object to string
             ]
             if not params.get('use_teacache', True): # Default to True if missing
                 command.append('--no-teacache')
 
             # Log the actual command being run
-            print(f"Executing command for job {job_id}: {' '.join(command)}")
+            print(f"Executing command for job {job_id}: {' '.join(shlex.quote(str(arg)) for arg in command)}")
             if ENABLE_JOB_LOGGING:
-                logger.info(f"Executing Command - ID: {job_id}, Server: {assigned_server}, Command: {' '.join(command)}")
+                logger.info(f"Executing Command - ID: {job_id}, Server: {assigned_server}, Image: {image_path.name}, Command: {' '.join(shlex.quote(str(arg)) for arg in command)}")
 
             process = subprocess.Popen(command,
                                        stdout=subprocess.PIPE,
@@ -763,7 +810,7 @@ def worker():
                                        text=True,
                                        bufsize=1,
                                        universal_newlines=True,
-                                       cwd=os.path.dirname(os.path.abspath(__file__)))
+                                       cwd=str(pathlib.Path(__file__).parent.absolute()))
 
             output_lines = []
             # Note: We don't have a reliable way to check the 'cancelled' flag *during* Popen
