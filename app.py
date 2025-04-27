@@ -15,6 +15,7 @@ import requests # Import requests for sending cancel signal
 import sys
 import pathlib  # Add pathlib for better path handling
 import shlex  # Add shlex for proper command argument escaping
+import random
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # Needed for flashing messages and session
@@ -794,7 +795,8 @@ def worker():
                 '--api_url', assigned_server,
                 '--prompt', params['prompt'],
                 '--length', str(params['duration']),
-                '--image', str(image_path)  # Convert Path object to string
+                '--image', str(image_path),  # Convert Path object to string
+                '--seed', str(random.randint(0, 2**32 - 1)), # Random seed for each job
             ]
             if not params.get('use_teacache', True): # Default to True if missing
                 command.append('--no-teacache')
