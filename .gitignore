@@ -181,3 +181,7 @@ cython_debug/
 # Configuration files
 config.json
 options.json
+downloads*/
+images/
+outputs*/
+queue_state.json

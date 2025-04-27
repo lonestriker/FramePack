@@ -76,7 +76,7 @@
 
         <!-- Options Accordion (Moved Down) -->
         <div id="options-accordion" class="bg-white rounded-lg shadow-md mb-5"> <!-- Reduced margin -->
-            <details class="group">
+            <details id="options-details" class="group">
                  <summary class="flex justify-between items-center font-medium cursor-pointer list-none p-3"> <!-- Reduced padding -->
                      <span class="text-base text-gray-700">Options</span> <!-- Reduced size -->
                      <span class="transition group-open:rotate-180 text-gray-500">
@@ -87,7 +87,7 @@
                      <form id="optionsForm" class="space-y-3"> <!-- Reduced spacing -->
                          <div>
                              <label for="opt-prompt" class="block text-xs font-medium text-gray-700 mb-1">Default Prompt:</label> <!-- Reduced size -->
-                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">{{ options.prompt }}</textarea> <!-- Reduced rows -->
+                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-2 py-1">{{ options.prompt }}</textarea> <!-- Reduced rows -->
                          </div>
                          <div>
                              <label for="opt-duration" class="block text-xs font-medium text-gray-700 mb-1">Default Duration (seconds):</label> <!-- Reduced size -->
@@ -202,7 +202,7 @@
                 </div>
                 <div>
                     <label for="modalPrompt" class="block text-xs font-medium text-gray-700 mb-1">Prompt:</label> <!-- Reduced size -->
-                    <textarea class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" id="modalPrompt" name="prompt" rows="3">{{ options.prompt }}</textarea>
+                    <textarea class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-2 py-1" id="modalPrompt" name="prompt" rows="3">{{ options.prompt }}</textarea>
                 </div>
                 <div>
                     <label for="modalDuration" class="block text-xs font-medium text-gray-700 mb-1">Duration (seconds):</label> <!-- Reduced size -->
@@ -246,6 +246,8 @@
     const zoomValueSpan = document.getElementById('zoom-value');
     const batchSelectToggleBtn = document.getElementById('batch-select-toggle-btn');
     const selectionControlsDiv = document.getElementById('selection-controls');
+    const optionsDetails = document.getElementById('options-details'); // Get options details element
+    const optionsPromptTextarea = document.getElementById('opt-prompt'); // Get options prompt textarea
 
     // --- State Variables ---
     let batchSelectModeActive = false;
@@ -454,11 +456,19 @@
         modalImagePreview.src = "{{ url_for('serve_image', filename='') }}" + imagePath; // Use url_for for base path
         modalImageName.textContent = imageName;
         // Reset message and default prompt/duration from current options if needed
-        modalPrompt.value = document.getElementById('opt-prompt').value; // Use current default prompt
+        modalPrompt.value = optionsPromptTextarea.value; // Use current default prompt
         modalDuration.value = document.getElementById('opt-duration').value; // Use current default duration
         modalMessage.textContent = '';
         modalMessage.className = 'mt-3 text-sm';
         modal.classList.remove('hidden');
+
+        // --- Auto-focus prompt in modal ---
+        requestAnimationFrame(() => {
+            modalPrompt.focus();
+            // Optional: Select text if you want
+            // modalPrompt.select(); 
+        });
+        // --- End Auto-focus ---
     }
 
     function closeModal() {
@@ -809,6 +819,7 @@
                         ${logText}
                         ${actionHtml ? `<div class="mt-2 text-right">${actionHtml}</div>` : ''} <!-- Actions aligned right -->
                     `;
+                    jobElement.title = `Status: ${job.status}\nLast Output: ${job.output && job.output.length > 0 ? job.output[job.output.length - 1] : 'N/A'}`; 
                     jobStatusList.appendChild(jobElement);
                 });
             })
@@ -910,6 +921,20 @@
             closeModal();
         }
     });
+
+    // Auto-focus prompt when Options accordion opens
+    if (optionsDetails && optionsPromptTextarea) {
+        optionsDetails.addEventListener('toggle', (event) => {
+            if (event.target.open) {
+                // Use requestAnimationFrame to ensure focus works after animation/rendering
+                requestAnimationFrame(() => {
+                    optionsPromptTextarea.focus();
+                    // Optional: Select text
+                    // optionsPromptTextarea.select(); 
+                });
+            }
+        });
+    }
 
 </script>
 {% endblock %}
