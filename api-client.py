@@ -253,11 +253,12 @@ def cancel_current_job(api_url):
 
 
 def poll_job_status(api_url, job_id, poll_interval):
-    """Poll the job status until completion or failure, allowing cancellation."""
+    """Poll the job status until completion or failure, printing progress."""
     print(f"Polling job status every {poll_interval} seconds... Press Ctrl+C to attempt cancellation.")
     
-    progress_bar = tqdm(total=100, desc="Processing", unit="%")
-    last_progress = 0
+    # Use simple print instead of tqdm for subprocess compatibility
+    last_progress = -1
+    last_message = ""
     
     session = requests.Session()
     
@@ -266,60 +267,55 @@ def poll_job_status(api_url, job_id, poll_interval):
             response = session.get(f"{api_url}/status/{job_id}", timeout=30)
             
             if response.status_code != 200:
+                # Print error to stderr? Or just continue? Print to stdout for now.
                 print(f"Error getting status: API returned status code {response.status_code}")
                 print(response.text)
                 time.sleep(poll_interval)
                 continue
                 
             status_data = response.json()
-            
-            # Update progress bar
-            if status_data['progress'] > last_progress:
-                progress_bar.update(status_data['progress'] - last_progress)
-                last_progress = status_data['progress']
-            
-            # Print message if it's changed
-            if hasattr(poll_job_status, 'last_message') and poll_job_status.last_message == status_data['message']:
-                pass  # Don't print the same message again
-            else:
-                poll_job_status.last_message = status_data['message']
-                print(f"\nStatus: {status_data['status']} - {status_data['message']}")
-            
+            current_progress = status_data.get('progress', 0)
+            current_message = status_data.get('message', '')
+            current_status = status_data.get('status', 'unknown')
+
+            # --- Print Progress Update Line ---
+            # Only print if progress or message changed to avoid spamming stdout
+            if current_progress != last_progress or current_message != last_message:
+                 print(f"PROGRESS::{current_progress}::{current_message}", flush=True)
+                 last_progress = current_progress
+                 last_message = current_message
+            # --- End Progress Update Line ---
+
             # Check if processing is done
-            if status_data['status'] == 'completed':
-                progress_bar.close()
-                return status_data['video_url']
-            elif status_data['status'] in ['failed', 'cancelled']: # Handle cancelled state
-                progress_bar.close()
-                print(f"Job finished with status: {status_data['status']}")
-                if status_data['message']:
-                     print(f"Message: {status_data['message']}")
-                # If cancelled, we don't treat it as a script failure unless cancellation itself failed
-                if status_data['status'] == 'failed':
-                     sys.exit(1) 
+            if current_status == 'completed':
+                print(f"Job completed. Final message: {current_message}", flush=True)
+                return status_data.get('video_url') # Return URL on success
+            elif current_status in ['failed', 'cancelled']: 
+                print(f"Job finished with status: {current_status}. Message: {current_message}", flush=True)
+                # If cancelled, we don't treat it as a script failure
+                if current_status == 'failed':
+                     sys.exit(1) # Exit with error code for failure
                 else:
                      return None # Indicate cancellation
 
         except requests.exceptions.RequestException as e:
-            print(f"Error polling status (will retry): {str(e)}")
+            print(f"Error polling status (will retry): {str(e)}", flush=True)
         
         # Wait interval, but allow interruption for cancellation
         try:
             time.sleep(poll_interval)
         except KeyboardInterrupt:
-            print("\nKeyboardInterrupt received.")
+            print("\nKeyboardInterrupt received during polling.", flush=True)
             try:
-                confirm = input(f"Do you want to attempt to cancel job {job_id}? (y/N): ").lower()
-                if confirm == 'y':
-                    if cancel_job(api_url, job_id):
-                        print("Cancellation requested. Exiting polling.")
-                        return None # Indicate cancellation attempt
-                    else:
-                        print("Failed to send cancellation request. Continuing polling...")
+                # Don't prompt in subprocess mode, just attempt cancel
+                print(f"Attempting to cancel job {job_id}...", flush=True)
+                if cancel_job(api_url, job_id):
+                    print("Cancellation requested. Exiting polling.", flush=True)
+                    return None # Indicate cancellation attempt
                 else:
-                    print("Cancellation aborted. Continuing polling...")
-            except EOFError: # Handle cases where input stream is closed (e.g., piping)
-                 print("\nInput stream closed, cannot confirm cancellation. Continuing polling...")
+                    print("Failed to send cancellation request. Continuing polling...", flush=True)
+            except EOFError: 
+                 print("\nInput stream closed, cannot confirm cancellation. Continuing polling...", flush=True)
 
 
 def download_result(api_url, video_url, output_dir):
@@ -533,7 +529,7 @@ def main():
             sys.exit(1)
             
     else:
-        # Use the asynchronous API endpoint (original behavior)
+        # --- Asynchronous Mode (Modified) ---
         print("--- Asynchronous Mode ---")
         job_id = submit_generation_job(
             args.api_url,
@@ -547,20 +543,25 @@ def main():
             use_teacache
         )
         
-        # Poll for status
+        # Poll for status and print progress directly
         video_url = poll_job_status(args.api_url, job_id, args.poll_interval)
         
-        # Download the result if not cancelled
+        # Download the result if polling completed successfully (didn't return None or exit)
         if video_url:
             output_path = download_result(args.api_url, video_url, args.output_dir)
-            print("\nGeneration completed successfully!")
-            print(f"Video file: {output_path}")
+            # Print final success message (already printed by poll_job_status)
+            # print("\nGeneration completed successfully!") 
+            print(f"Video file: {output_path}", flush=True)
+            # --- Print special marker for app.py to find the output path ---
+            # Ensure this is the *last* thing printed on success
             if output_path:
-                print(f"OUTPUT_FILE_PATH::{output_path}")
+                print(f"OUTPUT_FILE_PATH::{output_path}", flush=True) 
+            # --- End special marker ---
         elif video_url is None: # Indicates cancellation occurred during polling
-             print("\nJob was cancelled.")
+             print("\nJob was cancelled.", flush=True)
              sys.exit(0) # Exit gracefully after cancellation
         # If poll_job_status exited due to failure, sys.exit(1) was already called
+        # --- End Asynchronous Mode (Modified) ---
 
 
 if __name__ == "__main__":

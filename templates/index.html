@@ -804,11 +804,32 @@
                         actionHtml += ` <a href="${resultUrl}" download="${job.output_filename}" class="ml-1 text-xs bg-blue-500 hover:bg-blue-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out">Download</a>`;
                     }
 
+                    // --- Display Progress ---
+                    let progressDisplay = '';
+                    if (job.status === 'running' && job.progress !== undefined && job.progress > 0) {
+                        progressDisplay = `<span class="text-blue-600 font-medium ml-1">(${job.progress}%)</span>`;
+                    }
+                    // --- End Display Progress ---
+
+                    // --- Display Detailed Message ---
+                    let messageDisplay = '';
+                    // Show message for running, cancelling, or failed_will_retry states if available
+                    if (['running', 'cancelling', 'failed_will_retry'].includes(job.status) && job.message) {
+                         // Truncate long messages
+                         const shortMessage = job.message.length > 100 ? job.message.substring(0, 97) + '...' : job.message;
+                         messageDisplay = `<div class="text-[10px] text-gray-500 mt-0.5 truncate" title="${job.message}">${shortMessage}</div>`;
+                    } else if (job.status === 'failed' && job.message) { // Show final failure message
+                         const shortMessage = job.message.length > 100 ? job.message.substring(0, 97) + '...' : job.message;
+                         messageDisplay = `<div class="text-[10px] text-red-600 mt-0.5 truncate" title="${job.message}">${shortMessage}</div>`;
+                    }
+                    // --- End Display Detailed Message ---
+
                     jobElement.innerHTML = `
                         <div class="flex justify-between items-start mb-1"> <!-- Reduced margin -->
                             <span class="font-semibold text-xs text-gray-700 truncate mr-2" title="Job ID: ${jobId}">${jobId.substring(0, 8)}...</span> <!-- Reduced font -->
-                            ${getStatusBadge(job.status)}
+                            ${getStatusBadge(job.status)}${progressDisplay}
                         </div>
+                        ${messageDisplay}
                         <div class="space-y-0.5 mt-1"> <!-- Reduced spacing/margin -->
                             ${imageText}
                             ${promptText}
@@ -819,7 +840,6 @@
                         ${logText}
                         ${actionHtml ? `<div class="mt-2 text-right">${actionHtml}</div>` : ''} <!-- Actions aligned right -->
                     `;
-                    jobElement.title = `Status: ${job.status}\nLast Output: ${job.output && job.output.length > 0 ? job.output[job.output.length - 1] : 'N/A'}`; 
                     jobStatusList.appendChild(jobElement);
                 });
             })

@@ -232,7 +232,7 @@ def load_queue_state():
 # --- In-memory state (for simplicity, replace with DB/proper state management later) ---
 job_queue = queue.Queue()
 # Updated job_status structure
-job_status = {} # {job_id: {'status': 'queued'/'running'/'completed'/'failed_will_retry', 'output': [], 'params': {}, 'creation_time': '...', 'cancelled': False}}
+job_status = {} # {job_id: {'status': 'queued'/'running'/'completed'/'failed_will_retry', 'output': [], 'params': {}, 'creation_time': '...', 'cancelled': False, 'progress': 0, 'message': ''}} # Added progress/message
 # Replace active_servers with server_status
 server_status = {
     server: {'available': True, 'fail_count': 0, 'next_retry_time': 0, 'enabled': True} # Add enabled flag
@@ -253,7 +253,7 @@ def index():
     if request.method == 'POST':
         # Handle directory submission
         submitted_dir = request.form.get('directory')
-        if submitted_dir and os.path.isdir(submitted_dir):
+        if (submitted_dir and os.path.isdir(submitted_dir)):
             # Valid directory submitted, redirect to GET with query parameter
             return redirect(url_for('index', directory=submitted_dir))
         else:
@@ -426,13 +426,15 @@ def generate():
         'duration': duration,
         'use_teacache': use_teacache_for_job # Store the effective setting for this job
     }
-    # Add creation_time and cancelled flag
+    # Add creation_time, cancelled flag, progress, and message
     job_status[job_id] = {
         'status': 'queued', 
         'output': [], 
         'params': params, 
         'creation_time': datetime.utcnow().isoformat() + 'Z', # Add UTC timestamp
-        'cancelled': False # Initialize cancelled flag
+        'cancelled': False, # Initialize cancelled flag
+        'progress': 0,      # Initialize progress
+        'message': 'Queued' # Initialize message
     }
     job_queue.put((job_id, params))
     save_queue_state() # Save queue state after adding a job
@@ -724,14 +726,18 @@ def worker():
             job_queue.task_done() # Mark task done even if paused/cancelled here
             continue # Skip to next job in the main worker loop
 
+        # --- Record Start Time ---
+        start_time = time.time()
+        job_status[job_id]['start_time'] = start_time
+        # --- End Record Start Time ---
+
         # Store assigned server in job status
         job_status[job_id]['assigned_server'] = assigned_server 
 
         # --- Job Execution ---
         job_status[job_id]['status'] = 'running'
-        # Simplified log message, removed retry count
-        # Output now includes assignment info, so logger info added above
-        # job_status[job_id]['output'].append(f"Attempting job on server: {assigned_server}")
+        job_status[job_id]['progress'] = 0 # Reset progress when starting
+        job_status[job_id]['message'] = 'Starting execution...' # Update message
 
         job_failed = False
         error_message = ""
@@ -767,8 +773,27 @@ def worker():
             # is primarily handled by setting the status to 'cancelling' via the API.
             for line in process.stdout:
                 stripped_line = line.strip()
-                # Limit output stored per job to avoid memory issues? Maybe later.
-                if len(job_status[job_id]['output']) < 100: # Limit to 100 lines for now
+                
+                # --- Check for Progress Updates ---
+                if stripped_line.startswith("PROGRESS::"):
+                    try:
+                        parts = stripped_line.split("::", 2)
+                        if len(parts) == 3:
+                            progress_val = int(parts[1])
+                            message_val = parts[2]
+                            job_status[job_id]['progress'] = progress_val
+                            job_status[job_id]['message'] = message_val
+                            # Optionally log progress updates
+                            # if ENABLE_JOB_LOGGING:
+                            #     logger.debug(f"Job {job_id} Progress: {progress_val}% - {message_val}")
+                        continue # Don't add progress lines to regular output
+                    except (ValueError, IndexError):
+                        # Ignore malformed progress lines
+                        pass 
+                # --- End Progress Update Check ---
+
+                # Store regular output lines
+                if len(job_status[job_id]['output']) < 100: # Limit output lines
                     job_status[job_id]['output'].append(stripped_line)
                 output_lines.append(stripped_line) # Keep local copy for logging
 
@@ -789,10 +814,14 @@ def worker():
                 # More specific error message
                 error_message = f"Job script failed on {assigned_server} with return code: {process.returncode}"
                 job_status[job_id]['output'].append(error_message)
+                job_status[job_id]['message'] = f"Failed (RC: {process.returncode})" # Update message on failure
+                job_status[job_id]['progress'] = 0 # Reset progress on failure? Or leave as is? Resetting.
             else:
                 # Success!
                 job_status[job_id]['status'] = 'completed'
                 job_status[job_id]['output'].append("Job completed successfully.")
+                job_status[job_id]['progress'] = 100 # Set progress to 100 on completion
+                job_status[job_id]['message'] = "Completed successfully" # Update message
                  # Reset server status on success
                 with server_lock:
                     server_status[assigned_server]['fail_count'] = 0
@@ -832,9 +861,23 @@ def worker():
                  job_failed = True
                  error_message = f"Exception during job execution on {assigned_server}: {e}"
                  job_status[job_id]['output'].append(error_message)
+                 job_status[job_id]['message'] = f"Exception: {e}" # Update message on exception
+                 job_status[job_id]['progress'] = 0 # Reset progress
                  print(f"Job {job_id} encountered exception on {assigned_server}: {e}")
 
         finally:
+            # --- Record End Time & Calculate Duration ---
+            end_time = time.time()
+            job_info = job_status.get(job_id, {})
+            recorded_start_time = job_info.get('start_time')
+            if recorded_start_time:
+                duration_seconds = end_time - recorded_start_time
+                job_info['generation_duration_seconds'] = duration_seconds
+                # Optionally log the duration
+                if ENABLE_JOB_LOGGING:
+                    logger.info(f"Job {job_id} execution duration: {duration_seconds:.2f} seconds.")
+            # --- End Duration Calculation ---
+
             # --- Server Release / Re-queue Logic ---
             server_needs_release = True 
             # Check final status - if it ended up as 'cancelled' or 'cancelling', don't re-queue
@@ -844,6 +887,7 @@ def worker():
                 # Failure: Penalize server, re-queue job, mark server available for future (after backoff)
                 job_status[job_id]['status'] = 'failed_will_retry' 
                 job_status[job_id]['output'].append(f"Job failed on {assigned_server}. Re-queuing.")
+                job_status[job_id]['message'] = f"Failed, will retry. ({error_message})" # Update message
                 print(f"Job {job_id} failed on {assigned_server}. Applying backoff and re-queuing.")
                 if ENABLE_JOB_LOGGING:
                      logger.warning(f"Job Failed - ID: {job_id}, Server: {assigned_server}. Reason: {error_message}. Applying backoff and re-queuing.")
@@ -869,32 +913,23 @@ def worker():
                  logger.info(f"Job {job_id} ended with status {final_status}. Server {assigned_server} will be released without penalty.")
                  job_failed = False # Ensure it's not treated as a failure for release logic
                  server_needs_release = True # Ensure server is released below
+                 if final_status == 'cancelling': # If it was still 'cancelling', mark as 'cancelled'
+                     job_status[job_id]['status'] = 'cancelled'
+                     job_status[job_id]['message'] = "Cancelled by user"
 
-            # Release the server lock if needed (job succeeded or was cancelled)
+            # --- Simplified Server Release Logic ---
             if server_needs_release:
                  with server_lock:
                       # Check if the server still exists in the status dict (might have been removed by config change)
                       if assigned_server in server_status:
-                          # Ensure it's marked available and reset backoff if it wasn't a failure
-                          if not job_failed: 
-                              server_status[assigned_server]['fail_count'] = 0 # Reset fails on success/cancel
-                              server_status[assigned_server]['next_retry_time'] = 0
-                          
-                          # Always mark available if it wasn't already (unless in backoff)
-                          current_time = time.time()
-                          if not server_status[assigned_server]['available'] and current_time >= server_status[assigned_server]['next_retry_time']:
-                             server_status[assigned_server]['available'] = True
-                             print(f"Server {assigned_server} explicitly released (job success/cancelled).")
-                          elif not server_status[assigned_server]['available']:
-                              print(f"Server {assigned_server} remains unavailable due to backoff.")
-                          else:
-                              # If it was already available (e.g. backoff finished), ensure fail count/time reset if needed
-                              if not job_failed:
-                                   server_status[assigned_server]['fail_count'] = 0 
-                                   server_status[assigned_server]['next_retry_time'] = 0
-                              print(f"Server {assigned_server} was already available, state updated if necessary.")
+                          # Always mark available and reset state if job didn't fail
+                          server_status[assigned_server]['available'] = True
+                          server_status[assigned_server]['fail_count'] = 0 
+                          server_status[assigned_server]['next_retry_time'] = 0
+                          print(f"Server {assigned_server} released (job success/cancelled).")
                       else:
                           print(f"Server {assigned_server} no longer in config, cannot release.")
+            # --- End Simplified Server Release Logic ---
 
             # Save queue state after job completion/failure/cancellation
             save_queue_state() 
