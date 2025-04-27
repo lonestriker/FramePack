@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, url_for, send_file, jsonify, redirect
+from flask import Flask, render_template, request, url_for, send_file, jsonify, redirect, flash
 import os
 import threading
 import queue
@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 
 app = Flask(__name__)
+app.secret_key = os.urandom(24) # Needed for flashing messages
 
 # --- Logging Setup --- 
 logger = logging.getLogger('framepack')
@@ -38,6 +39,45 @@ def load_config():
 config_data = load_config()
 API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
 ENABLE_JOB_LOGGING = config_data.get('ENABLE_JOB_LOGGING', True) # Get logging flag
+
+# --- Options Loading/Saving ---
+OPTIONS_FILE = 'options.json'
+DEFAULT_OPTIONS = {
+    'prompt': '',
+    'duration': 5,
+    'use_teacache': True # Corresponds to NOT using --no-teacache
+}
+
+def load_options():
+    try:
+        if os.path.exists(OPTIONS_FILE):
+            with open(OPTIONS_FILE, 'r') as f:
+                loaded = json.load(f)
+                # Validate and merge with defaults
+                options = DEFAULT_OPTIONS.copy()
+                options.update({k: loaded[k] for k in DEFAULT_OPTIONS if k in loaded})
+                # Ensure duration is within bounds
+                options['duration'] = max(1, min(MAX_DURATION, int(options.get('duration', DEFAULT_DURATION))))
+                # Ensure teacache is boolean
+                options['use_teacache'] = bool(options.get('use_teacache', True))
+                return options
+        else:
+            return DEFAULT_OPTIONS.copy()
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        print(f"Warning: Could not load or parse {OPTIONS_FILE}, using defaults. Error: {e}")
+        return DEFAULT_OPTIONS.copy()
+
+def save_options(options):
+    try:
+        with open(OPTIONS_FILE, 'w') as f:
+            json.dump(options, f, indent=4)
+    except IOError as e:
+        print(f"Error: Could not save options to {OPTIONS_FILE}: {e}")
+        if ENABLE_JOB_LOGGING:
+            logger.error(f"Failed to save options to {OPTIONS_FILE}: {e}")
+
+# Load initial options
+app_options = load_options()
 
 # --- Finalize Logging Setup (after config load) ---
 if ENABLE_JOB_LOGGING:
@@ -107,20 +147,59 @@ def view_dir():
                            images=images, 
                            error=error_message, 
                            max_duration=MAX_DURATION, 
-                           default_duration=DEFAULT_DURATION)
+                           default_duration=app_options['duration'], # Use loaded default duration
+                           default_prompt=app_options['prompt']) # Pass default prompt
+
+@app.route('/options', methods=['GET', 'POST'])
+def options_page():
+    global app_options
+    if request.method == 'POST':
+        try:
+            new_prompt = request.form.get('prompt', '')
+            new_duration = request.form.get('duration', DEFAULT_OPTIONS['duration'], type=int)
+            # Checkbox value is 'on' if checked, None otherwise
+            new_use_teacache = request.form.get('use_teacache') == 'on' 
+
+            # Validate duration
+            if not 1 <= new_duration <= MAX_DURATION:
+                flash(f'Invalid duration. Must be between 1 and {MAX_DURATION}. Using default.', 'warning')
+                new_duration = DEFAULT_OPTIONS['duration']
+
+            app_options['prompt'] = new_prompt
+            app_options['duration'] = new_duration
+            app_options['use_teacache'] = new_use_teacache
+            
+            save_options(app_options)
+            flash('Options saved successfully!', 'success')
+            if ENABLE_JOB_LOGGING:
+                logger.info(f"Options updated: Prompt='{new_prompt}', Duration={new_duration}, UseTeaCache={new_use_teacache}")
+
+        except Exception as e:
+             flash(f'Error saving options: {e}', 'error')
+             if ENABLE_JOB_LOGGING:
+                 logger.error(f"Error saving options via web UI: {e}")
+
+        return redirect(url_for('options_page')) # Redirect to refresh page after POST
+
+    # GET request
+    return render_template('options.html', options=app_options, max_duration=MAX_DURATION)
 
 @app.route('/generate', methods=['POST'])
 def generate():
+    global app_options
     image_path = request.form.get('image_path')
-    prompt = request.form.get('prompt', '')
-    duration = request.form.get('duration', DEFAULT_DURATION, type=int)
+    # Use submitted prompt, fallback to saved default, fallback to empty string
+    prompt = request.form.get('prompt', app_options['prompt']).strip() 
+    # Use submitted duration, fallback to saved default
+    duration = request.form.get('duration', app_options['duration'], type=int) 
+    # Use the globally configured teacache setting for this job
+    use_teacache_for_job = app_options['use_teacache']
 
     if not image_path or not os.path.isfile(image_path):
         return jsonify({'error': 'Invalid image path'}), 400
 
     # Validate duration
     if not 1 <= duration <= MAX_DURATION:
-         # Use default or return error, returning error is clearer for API
         return jsonify({'error': f'Invalid duration. Must be between 1 and {MAX_DURATION}'}), 400
 
     job_id = str(uuid.uuid4())
@@ -128,14 +207,15 @@ def generate():
         'image_path': image_path,
         'prompt': prompt,
         'duration': duration,
+        'use_teacache': use_teacache_for_job # Store the effective setting for this job
     }
     job_status[job_id] = {'status': 'queued', 'output': [], 'params': params}
     job_queue.put((job_id, params))
 
     if ENABLE_JOB_LOGGING:
-        # Log only the filename
         filename = os.path.basename(image_path)
-        logger.info(f"Job Submitted - ID: {job_id}, Image: {filename}, Prompt: '{params['prompt']}', Duration: {params['duration']}s")
+        # Log the effective parameters used for the job
+        logger.info(f"Job Submitted - ID: {job_id}, Image: {filename}, Prompt: '{params['prompt']}', Duration: {params['duration']}s, UseTeaCache: {params['use_teacache']}")
 
     return jsonify({'job_id': job_id, 'status': 'queued'}), 202 # 202 Accepted
 
@@ -226,6 +306,13 @@ def worker():
                 '--length', str(params['duration']),
                 '--image', params['image_path']
             ]
+            if not params.get('use_teacache', True): # Default to True if missing
+                command.append('--no-teacache')
+
+            # Log the actual command being run
+            print(f"Executing command for job {job_id}: {' '.join(command)}")
+            if ENABLE_JOB_LOGGING:
+                logger.info(f"Executing Command - ID: {job_id}, Server: {assigned_server}, Command: {' '.join(command)}")
 
             process = subprocess.Popen(command,
                                        stdout=subprocess.PIPE,
@@ -278,7 +365,8 @@ def worker():
                     # Store the found (or default 'Unknown') filename
                     job_status[job_id]['output_filename'] = output_filename
                     # Add prompt to Job Completed log
-                    logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}'")
+                    teacache_status = params.get('use_teacache', True)
+                    logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}', UseTeaCache: {teacache_status}")
 
         except Exception as e:
             job_failed = True
@@ -345,4 +433,9 @@ if __name__ == '__main__':
     else:
         print("Job logging disabled via config.")
 
-    app.run(debug=True, host='0.0.0.0') # Run on all available interfaces
+    if ENABLE_JOB_LOGGING:
+        logger.info(f"Loaded options: {app_options}")
+    else:
+        print(f"Loaded options: {app_options}")
+        
+    app.run(debug=True, host='0.0.0.0', port=5001) # Run on all available interfaces

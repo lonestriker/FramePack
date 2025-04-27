@@ -91,7 +91,7 @@
                             
                             <div class="mb-3">
                                 <label for="prompt" class="form-label">Prompt:</label>
-                                <input type="text" class="form-control" id="prompt" name="prompt">
+                                <textarea class="form-control" id="modalPrompt" name="prompt" rows="3">{{ default_prompt }}</textarea>
                             </div>
                             
                             <div class="mb-3">
@@ -111,4 +111,35 @@
 {% endblock %}
 
 {% block scripts_extra %}
+<script>
+    function submitGeneration() {
+        const form = document.getElementById('generateForm');
+        const formData = new FormData(form);
+        const messageDiv = document.getElementById('modalMessage');
+        messageDiv.textContent = 'Submitting job...';
+        messageDiv.className = 'alert alert-info'; // Use Bootstrap classes
+
+        fetch("{{ url_for('generate') }}", {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.job_id) {
+                messageDiv.textContent = `Job submitted successfully! ID: ${data.job_id}`;
+                messageDiv.className = 'alert alert-success';
+                // Optionally close modal after a delay or redirect
+                // setTimeout(() => { bootstrap.Modal.getInstance(document.getElementById('generationModal')).hide(); }, 2000);
+            } else {
+                messageDiv.textContent = `Error: ${data.error || 'Unknown error'}`;
+                messageDiv.className = 'alert alert-danger';
+            }
+        })
+        .catch(error => {
+            console.error('Error submitting generation job:', error);
+            messageDiv.textContent = `Error submitting job: ${error}`;
+            messageDiv.className = 'alert alert-danger';
+        });
+    }
+</script>
 {% endblock %}
