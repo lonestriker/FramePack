@@ -872,9 +872,10 @@ def worker():
                 try:
                     # Convert ISO string timestamp to datetime object, then to timestamp
                     if isinstance(recorded_start_time, str):
-                        # Remove 'Z' suffix if it exists and parse the timestamp
+                        # Handle ISO format correctly
                         if recorded_start_time.endswith('Z'):
-                            recorded_start_time = recorded_start_time[:-1]
+                            # Replace 'Z' with '+00:00' for proper UTC parsing
+                            recorded_start_time = recorded_start_time.replace('Z', '+00:00')
                         start_time_dt = datetime.fromisoformat(recorded_start_time)
                         start_timestamp = start_time_dt.timestamp()
                     else:
@@ -882,6 +883,16 @@ def worker():
                         start_timestamp = recorded_start_time
                     
                     duration_seconds = end_time - start_timestamp
+                    # Sanity check for duration
+                    if duration_seconds < 0 or duration_seconds > 3600:  # More than an hour is likely wrong
+                        logger.warning(f"Suspicious duration for job {job_id}: {duration_seconds:.2f}s. Using elapsed time from job start.")
+                        # Fallback to elapsed time since worker started processing
+                        start_time = job_status[job_id].get('start_time', end_time)
+                        if isinstance(start_time, (int, float)):
+                            duration_seconds = end_time - start_time
+                        else:
+                            duration_seconds = 0  # Failed to get a valid duration
+                            
                     job_info['generation_duration_seconds'] = duration_seconds
                     # Optionally log the duration
                     if ENABLE_JOB_LOGGING:
