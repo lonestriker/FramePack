@@ -96,13 +96,17 @@ ENABLE_JOB_LOGGING = app_config.get('ENABLE_JOB_LOGGING', True) # Get logging fl
 # Define constants used in options loading *before* load_options
 MAX_DURATION = 120
 DEFAULT_DURATION = 5
+MIN_ZOOM = 80
+MAX_ZOOM = 300
+DEFAULT_ZOOM = 150
 
 # --- Options Loading/Saving ---
 OPTIONS_FILE = 'options.json'
 DEFAULT_OPTIONS = {
     'prompt': '',
-    'duration': DEFAULT_DURATION, # Use constant here too
-    'use_teacache': True # Corresponds to NOT using --no-teacache
+    'duration': DEFAULT_DURATION, 
+    'use_teacache': True,
+    'zoom_level': DEFAULT_ZOOM # Add zoom level
 }
 
 def load_options():
@@ -114,16 +118,20 @@ def load_options():
                 # Safely update options
                 options['prompt'] = str(loaded.get('prompt', DEFAULT_OPTIONS['prompt']))
                 try:
-                    # Use MAX_DURATION and DEFAULT_DURATION here
                     duration_val = int(loaded.get('duration', DEFAULT_DURATION))
                     options['duration'] = max(1, min(MAX_DURATION, duration_val))
                 except (ValueError, TypeError):
-                    options['duration'] = DEFAULT_DURATION # Fallback on conversion error
+                    options['duration'] = DEFAULT_DURATION 
                 options['use_teacache'] = bool(loaded.get('use_teacache', DEFAULT_OPTIONS['use_teacache']))
+                try: # Load and validate zoom level
+                    zoom_val = int(loaded.get('zoom_level', DEFAULT_ZOOM))
+                    options['zoom_level'] = max(MIN_ZOOM, min(MAX_ZOOM, zoom_val))
+                except (ValueError, TypeError):
+                     options['zoom_level'] = DEFAULT_ZOOM # Fallback on conversion error
                 return options
         else:
             return DEFAULT_OPTIONS.copy()
-    except (json.JSONDecodeError, IOError) as e: # Catch IO errors too
+    except (json.JSONDecodeError, IOError) as e: 
         print(f"Warning: Could not load or parse {OPTIONS_FILE}, using defaults. Error: {e}")
         return DEFAULT_OPTIONS.copy()
 
@@ -300,19 +308,26 @@ def api_save_options():
         try:
             new_duration = int(data.get('duration', app_options['duration']))
             if not 1 <= new_duration <= MAX_DURATION:
-                 new_duration = app_options['duration'] # Keep old if invalid
-                 # Optionally return a warning in the response
+                 new_duration = app_options['duration'] 
         except (ValueError, TypeError):
-            new_duration = app_options['duration'] # Keep old on error
+            new_duration = app_options['duration'] 
+
+        try: # Validate zoom level from payload
+            new_zoom = int(data.get('zoom_level', app_options['zoom_level']))
+            if not MIN_ZOOM <= new_zoom <= MAX_ZOOM:
+                 new_zoom = app_options['zoom_level'] # Keep old if invalid
+        except (ValueError, TypeError):
+            new_zoom = app_options['zoom_level'] # Keep old on error
 
         app_options['prompt'] = new_prompt
         app_options['duration'] = new_duration
         app_options['use_teacache'] = new_use_teacache
+        app_options['zoom_level'] = new_zoom # Update zoom level
         
         save_options(app_options)
         
         if ENABLE_JOB_LOGGING:
-            logger.info(f"Options updated via API: Prompt='{new_prompt}', Duration={new_duration}, UseTeaCache={new_use_teacache}")
+            logger.info(f"Options updated via API: Prompt='{new_prompt}', Duration={new_duration}, UseTeaCache={new_use_teacache}, Zoom={new_zoom}")
         
         return jsonify({'message': 'Options saved successfully', 'options': app_options}), 200
 

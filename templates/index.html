@@ -49,39 +49,7 @@
         </div>
         {% endif %}
 
-        <!-- Options Accordion -->
-        <div id="options-accordion" class="bg-white rounded-lg shadow-md mb-5"> <!-- Reduced margin -->
-            <details class="group">
-                 <summary class="flex justify-between items-center font-medium cursor-pointer list-none p-3"> <!-- Reduced padding -->
-                     <span class="text-base text-gray-700">Options</span> <!-- Reduced size -->
-                     <span class="transition group-open:rotate-180 text-gray-500">
-                         <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg> <!-- Reduced icon size -->
-                     </span>
-                 </summary>
-                 <div class="text-gray-600 mt-0 group-open:animate-fadeIn border-t border-gray-200 p-4 text-sm"> <!-- Added text-sm -->
-                     <form id="optionsForm" class="space-y-3"> <!-- Reduced spacing -->
-                         <div>
-                             <label for="opt-prompt" class="block text-xs font-medium text-gray-700 mb-1">Default Prompt:</label> <!-- Reduced size -->
-                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">{{ options.prompt }}</textarea> <!-- Reduced rows -->
-                         </div>
-                         <div>
-                             <label for="opt-duration" class="block text-xs font-medium text-gray-700 mb-1">Default Duration (seconds):</label> <!-- Reduced size -->
-                             <input type="number" id="opt-duration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                         </div>
-                         <div class="flex items-center pt-1"> <!-- Reduced padding -->
-                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" {% if options.use_teacache %}checked{% endif %}>
-                             <label for="opt-use_teacache" class="ml-2 block text-xs text-gray-900">Use TeaCache (Default)</label> <!-- Reduced size -->
-                         </div>
-                         <div class="flex justify-end items-center space-x-3 pt-2"> <!-- Reduced padding -->
-                             <span id="options-save-status" class="text-sm"></span> <!-- Status message -->
-                             <button type="button" onclick="saveOptions()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Defaults</button> <!-- Adjusted size -->
-                         </div>
-                     </form>
-                 </div>
-            </details>
-        </div>
-
-        <!-- Configuration Accordion -->
+        <!-- Configuration Accordion (Moved Up) -->
         <div id="config-accordion" class="bg-white rounded-lg shadow-md mb-5"> 
             <details class="group">
                  <summary class="flex justify-between items-center font-medium cursor-pointer list-none p-3"> 
@@ -106,6 +74,47 @@
             </details>
         </div>
 
+        <!-- Options Accordion (Moved Down) -->
+        <div id="options-accordion" class="bg-white rounded-lg shadow-md mb-5"> <!-- Reduced margin -->
+            <details class="group">
+                 <summary class="flex justify-between items-center font-medium cursor-pointer list-none p-3"> <!-- Reduced padding -->
+                     <span class="text-base text-gray-700">Options</span> <!-- Reduced size -->
+                     <span class="transition group-open:rotate-180 text-gray-500">
+                         <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg> <!-- Reduced icon size -->
+                     </span>
+                 </summary>
+                 <div class="text-gray-600 mt-0 group-open:animate-fadeIn border-t border-gray-200 p-4 text-sm"> <!-- Added text-sm -->
+                     <form id="optionsForm" class="space-y-3"> <!-- Reduced spacing -->
+                         <div>
+                             <label for="opt-prompt" class="block text-xs font-medium text-gray-700 mb-1">Default Prompt:</label> <!-- Reduced size -->
+                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">{{ options.prompt }}</textarea> <!-- Reduced rows -->
+                         </div>
+                         <div>
+                             <label for="opt-duration" class="block text-xs font-medium text-gray-700 mb-1">Default Duration (seconds):</label> <!-- Reduced size -->
+                             <input type="number" id="opt-duration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                         </div>
+                         <div class="flex items-center pt-1"> <!-- Reduced padding -->
+                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" {% if options.use_teacache %}checked{% endif %}>
+                             <label for="opt-use_teacache" class="ml-2 block text-xs text-gray-900">Use TeaCache (Default)</label> <!-- Reduced size -->
+                         </div>
+                         
+                         <!-- Zoom Slider (Moved Here) -->
+                         <div id="zoom-controls" class="flex items-center space-x-3 pt-2">
+                             <label for="zoom-slider" class="text-xs font-medium text-gray-700">Image Zoom:</label>
+                             <!-- Set initial value from options -->
+                             <input type="range" id="zoom-slider" min="80" max="300" value="{{ options.zoom_level }}" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700">
+                             <span id="zoom-value" class="text-xs text-gray-600 w-12 text-right">{{ options.zoom_level }}px</span>
+                         </div>
+
+                         <div class="flex justify-end items-center space-x-3 pt-2"> <!-- Reduced padding -->
+                             <span id="options-save-status" class="text-sm"></span> <!-- Status message -->
+                             <button type="button" onclick="saveOptions()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Defaults</button> <!-- Adjusted size -->
+                         </div>
+                     </form>
+                 </div>
+            </details>
+        </div>
+
         <!-- Selection Controls (only show if images exist AND batch mode is active) -->
         {% if images %}
         <div id="selection-controls" class="bg-gray-50 p-3 rounded-lg shadow-sm mb-4 flex justify-between items-center hidden"> <!-- Initially hidden -->
@@ -122,9 +131,8 @@
 
         <!-- Image Grid -->
         {% if images %}
-            <div id="image-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"> <!-- Added id -->
+            <div id="image-grid" class="grid gap-4"> 
                 {% for image in images %}
-                <!-- Added data-image-path, changed onclick to handleImageClick -->
                 <div class="image-card bg-white rounded-lg shadow-md overflow-hidden cursor-pointer flex flex-col items-center justify-start card-hover-effect" 
                      data-image-path="{{ image.path | e }}"
                      onclick="handleImageClick(this, '{{ image.path | e }}', '{{ image.name | e }}')">
@@ -234,12 +242,28 @@
     const selectionCountSpan = document.getElementById('selection-count');
     const queueStatusMsg = document.getElementById('queue-status-msg');
     const imageGrid = document.getElementById('image-grid'); // Get image grid container
+    const zoomSlider = document.getElementById('zoom-slider');
+    const zoomValueSpan = document.getElementById('zoom-value');
     const batchSelectToggleBtn = document.getElementById('batch-select-toggle-btn');
     const selectionControlsDiv = document.getElementById('selection-controls');
 
     // --- State Variables ---
     let batchSelectModeActive = false;
     const selectedImagePaths = new Set();
+
+    // --- Zoom Control ---
+    function updateZoom() {
+        if (!imageGrid || !zoomSlider || !zoomValueSpan) return;
+        const minWidth = zoomSlider.value;
+        imageGrid.style.setProperty('--image-card-min-width', `${minWidth}px`);
+        zoomValueSpan.textContent = `${minWidth}px`;
+    }
+
+    if (zoomSlider) {
+        zoomSlider.addEventListener('input', updateZoom);
+        // Set initial zoom level on load - value is set by Flask template now
+        // updateZoom(); // Call to apply the initial value from the template
+    }
 
     // --- Batch Select Mode Toggle ---
     function toggleBatchSelectMode() {
@@ -478,7 +502,8 @@
         const optionsData = {
             prompt: document.getElementById('opt-prompt').value,
             duration: parseInt(document.getElementById('opt-duration').value, 10),
-            use_teacache: document.getElementById('opt-use_teacache').checked
+            use_teacache: document.getElementById('opt-use_teacache').checked,
+            zoom_level: parseInt(zoomSlider.value, 10) // Add zoom level
         };
 
         statusSpan.textContent = 'Saving...';
@@ -499,6 +524,11 @@
                 // Update defaults in the modal generation form if needed
                 modalPrompt.value = optionsData.prompt;
                 modalDuration.value = optionsData.duration;
+                // Optionally update slider value if server corrected it, though unlikely
+                // if (zoomSlider.value != data.options.zoom_level) {
+                //     zoomSlider.value = data.options.zoom_level;
+                //     updateZoom();
+                // }
             } else {
                 statusSpan.textContent = `Error: ${data.error || 'Failed to save'}`;
                 statusSpan.className = 'text-sm text-red-600';
@@ -872,6 +902,7 @@
 
     // Initial UI update for selection (ensures buttons are correctly disabled initially)
     updateSelectionUI();
+    updateZoom(); // Apply initial zoom from template value
 
     // Close modal on escape key
     document.addEventListener('keydown', function (event) {

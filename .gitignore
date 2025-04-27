@@ -180,3 +180,4 @@ cython_debug/
 
 # Configuration files
 config.json
+options.json

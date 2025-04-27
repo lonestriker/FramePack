@@ -61,6 +61,11 @@
             font-weight: bold;
             box-shadow: 0 1px 3px rgba(0,0,0,0.2);
         }
+        /* CSS for dynamic image grid columns */
+        #image-grid {
+            /* Uses CSS variable set by JS slider */
+            grid-template-columns: repeat(auto-fit, minmax(var(--image-card-min-width, 150px), 1fr));
+        }
     </style>
     {% block head %}{% endblock %}
 </head>
