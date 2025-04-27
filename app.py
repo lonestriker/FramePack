@@ -869,11 +869,28 @@ def worker():
             job_info = job_status.get(job_id, {})
             recorded_start_time = job_info.get('start_time')
             if recorded_start_time:
-                duration_seconds = end_time - recorded_start_time
-                job_info['generation_duration_seconds'] = duration_seconds
-                # Optionally log the duration
-                if ENABLE_JOB_LOGGING:
-                    logger.info(f"Job {job_id} execution duration: {duration_seconds:.2f} seconds.")
+                try:
+                    # Convert ISO string timestamp to datetime object, then to timestamp
+                    if isinstance(recorded_start_time, str):
+                        # Remove 'Z' suffix if it exists and parse the timestamp
+                        if recorded_start_time.endswith('Z'):
+                            recorded_start_time = recorded_start_time[:-1]
+                        start_time_dt = datetime.fromisoformat(recorded_start_time)
+                        start_timestamp = start_time_dt.timestamp()
+                    else:
+                        # Already a timestamp (float)
+                        start_timestamp = recorded_start_time
+                    
+                    duration_seconds = end_time - start_timestamp
+                    job_info['generation_duration_seconds'] = duration_seconds
+                    # Optionally log the duration
+                    if ENABLE_JOB_LOGGING:
+                        logger.info(f"Job {job_id} execution duration: {duration_seconds:.2f} seconds.")
+                except (ValueError, TypeError) as e:
+                    # Handle parsing errors
+                    logger.error(f"Error calculating duration for job {job_id}: {e}")
+                    # Use a fallback duration if needed
+                    job_info['generation_duration_seconds'] = 0
             # --- End Duration Calculation ---
 
             # --- Server Release / Re-queue Logic ---
