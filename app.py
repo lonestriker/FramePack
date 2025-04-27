@@ -10,6 +10,7 @@ import math
 import logging
 from datetime import datetime
 import argparse # Import argparse
+import atexit # For saving queue on exit
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # Needed for flashing messages and session
@@ -157,16 +158,79 @@ MAX_RETRY_DELAY = 60 # seconds
 # Configuration Constants (can still be defined here if needed)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 
+# --- Queue State Persistence ---
+QUEUE_STATE_FILE = 'queue_state.json'
+
+def save_queue_state():
+    """Saves non-final jobs (queued, failed_will_retry) to a file."""
+    try:
+        state_to_save = {}
+        # Create a copy to avoid modifying dict during iteration
+        current_jobs = dict(job_status) 
+        for job_id, data in current_jobs.items():
+            if data.get('status') in ['queued', 'failed_will_retry']:
+                state_to_save[job_id] = data
+        
+        with open(QUEUE_STATE_FILE, 'w') as f:
+            json.dump(state_to_save, f, indent=4)
+        if ENABLE_JOB_LOGGING:
+            logger.info(f"Saved {len(state_to_save)} pending jobs to {QUEUE_STATE_FILE}")
+            
+    except Exception as e:
+        print(f"Error saving queue state: {e}")
+        if ENABLE_JOB_LOGGING:
+            logger.error(f"Failed to save queue state to {QUEUE_STATE_FILE}: {e}")
+
+def load_queue_state():
+    """Loads queue state from file and re-populates the queue."""
+    global queue_paused # Allow modification
+    jobs_loaded = 0
+    if os.path.exists(QUEUE_STATE_FILE):
+        try:
+            with open(QUEUE_STATE_FILE, 'r') as f:
+                loaded_state = json.load(f)
+            
+            if loaded_state:
+                print(f"Loading {len(loaded_state)} pending jobs from {QUEUE_STATE_FILE}...")
+                for job_id, data in loaded_state.items():
+                    if job_id not in job_status: # Avoid overwriting if somehow already present
+                        job_status[job_id] = data
+                        # Re-add to the actual queue for processing
+                        job_queue.put((job_id, data['params'])) 
+                        jobs_loaded += 1
+                
+                if jobs_loaded > 0:
+                    print(f"Restored {jobs_loaded} jobs. Pausing queue on startup.")
+                    logger.info(f"Restored {jobs_loaded} jobs from {QUEUE_STATE_FILE}. Pausing queue.")
+                    queue_paused = True # Pause queue by default if jobs were restored
+                else:
+                     print("Queue state file found, but no pending jobs to restore.")
+                     logger.info("Queue state file found, but no pending jobs to restore.")
+            else:
+                 print(f"{QUEUE_STATE_FILE} is empty. No jobs to restore.")
+                 logger.info(f"{QUEUE_STATE_FILE} is empty. No jobs to restore.")
+
+        except (json.JSONDecodeError, IOError, KeyError) as e:
+            print(f"Error loading queue state from {QUEUE_STATE_FILE}: {e}. Starting with empty queue.")
+            logger.error(f"Error loading queue state from {QUEUE_STATE_FILE}: {e}. Starting with empty queue.")
+            # Optionally delete or rename the corrupted file
+            # os.remove(QUEUE_STATE_FILE) 
+    else:
+        print("No queue state file found. Starting with empty queue.")
+        logger.info("No queue state file found. Starting with empty queue.")
+    return jobs_loaded > 0 # Return true if queue was paused
+
 # --- In-memory state (for simplicity, replace with DB/proper state management later) ---
 job_queue = queue.Queue()
 # Updated job_status structure
-job_status = {} # {job_id: {'status': 'queued'/'running'/'completed'/'failed_will_retry', 'output': [], 'params': {}}}
+job_status = {} # {job_id: {'status': 'queued'/'running'/'completed'/'failed_will_retry', 'output': [], 'params': {}, 'creation_time': '...', 'cancelled': False}}
 # Replace active_servers with server_status
 server_status = {
-    server: {'available': True, 'fail_count': 0, 'next_retry_time': 0}
+    server: {'available': True, 'fail_count': 0, 'next_retry_time': 0, 'enabled': True} # Add enabled flag
     for server in API_SERVERS
 }
 server_lock = threading.Lock() # Keep the lock
+queue_paused = False # Initialize queue pause state
 
 # --- Routes ---
 
@@ -295,7 +359,7 @@ def api_config():
                         # new_server_status[server]['available'] = True 
                     else:
                         # Initialize new servers
-                        new_server_status[server] = {'available': True, 'fail_count': 0, 'next_retry_time': 0}
+                        new_server_status[server] = {'available': True, 'fail_count': 0, 'next_retry_time': 0, 'enabled': True}
                         logger.info(f"New API server added: {server}")
                 
                 # Log removed servers
@@ -346,8 +410,16 @@ def generate():
         'duration': duration,
         'use_teacache': use_teacache_for_job # Store the effective setting for this job
     }
-    job_status[job_id] = {'status': 'queued', 'output': [], 'params': params}
+    # Add creation_time and cancelled flag
+    job_status[job_id] = {
+        'status': 'queued', 
+        'output': [], 
+        'params': params, 
+        'creation_time': datetime.utcnow().isoformat() + 'Z', # Add UTC timestamp
+        'cancelled': False # Initialize cancelled flag
+    }
     job_queue.put((job_id, params))
+    save_queue_state() # Save queue state after adding a job
 
     if ENABLE_JOB_LOGGING:
         filename = os.path.basename(image_path)
@@ -359,20 +431,146 @@ def generate():
 @app.route('/api/jobs')
 def api_jobs():
     # Return a copy to avoid issues if dict changes during serialization
-    return jsonify(dict(job_status))
+    # Ensure the cancelled flag is included if needed by frontend logic later
+    return jsonify(dict(job_status)) 
 
-# --- New Route for Server Status ---
+# --- New API Route for Cancelling Jobs ---
+@app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
+def cancel_job(job_id):
+    if job_id not in job_status:
+        return jsonify({'error': 'Job not found'}), 404
+
+    current_status = job_status[job_id].get('status')
+    
+    if current_status in ['completed', 'failed', 'cancelled', 'cancelling']:
+         return jsonify({'message': f'Job already in final or cancelling state: {current_status}'}), 400
+
+    if current_status in ['queued', 'failed_will_retry']:
+        job_status[job_id]['status'] = 'cancelled'
+        job_status[job_id]['cancelled'] = True # Set the flag
+        job_status[job_id]['output'].append("Job cancelled by user before execution.")
+        logger.info(f"Job Cancelled (Queued) - ID: {job_id}")
+        save_queue_state() # Save state after cancelling queued job
+        return jsonify({'message': 'Job cancelled successfully'}), 200
+        
+    elif current_status == 'running':
+        job_status[job_id]['status'] = 'cancelling' # Mark as cancelling
+        job_status[job_id]['cancelled'] = True # Set the flag for the worker to potentially see (best effort)
+        job_status[job_id]['output'].append("Cancellation requested by user...")
+        logger.info(f"Job Cancellation Requested (Running) - ID: {job_id}")
+        # Note: This doesn't actively kill the subprocess in the current worker design.
+        # It relies on the UI showing 'cancelling' and potentially the backend job
+        # itself stopping if it implements cancellation checks.
+        # Note: save_queue_state will be called by the worker when it finishes/fails/cancels
+        return jsonify({'message': 'Cancellation requested. Job marked as cancelling.'}), 200
+    else:
+        # Should not happen based on initial check, but good practice
+        return jsonify({'error': f'Cannot cancel job in state: {current_status}'}), 400
+
+# --- Queue Control API Routes ---
+@app.route('/api/queue/clear', methods=['POST'])
+def clear_queue():
+    global job_status, job_queue
+    cleared_count = 0
+    
+    # Need to rebuild the queue and job_status carefully
+    new_job_status = {}
+    temp_queue_items = []
+
+    # Drain the current queue first
+    while not job_queue.empty():
+        try:
+            temp_queue_items.append(job_queue.get_nowait())
+        except queue.Empty:
+            break
+            
+    # Iterate through job_status and keep non-queued/non-retry jobs
+    for job_id, data in job_status.items():
+        if data.get('status') not in ['queued', 'failed_will_retry']:
+            new_job_status[job_id] = data
+        else:
+            cleared_count += 1
+            logger.info(f"Clearing job {job_id} with status {data.get('status')}")
+
+    # Re-populate the queue only with items that were NOT cleared from job_status
+    # This handles the case where a job might be in the queue but already marked differently in status
+    # (though ideally status and queue are consistent)
+    for item_job_id, item_params in temp_queue_items:
+        if item_job_id in new_job_status: # Should only happen if status wasn't queued/retry
+             job_queue.put((item_job_id, item_params))
+             
+    job_status = new_job_status # Atomically update job_status
+    
+    logger.info(f"Cleared {cleared_count} jobs from the queue.")
+    save_queue_state() # Save the now empty/reduced queue state
+    return jsonify({'message': f'Cleared {cleared_count} jobs from the queue.'}), 200
+
+@app.route('/api/queue/pause', methods=['POST'])
+def pause_queue():
+    global queue_paused
+    queue_paused = True
+    logger.info("Queue paused.")
+    return jsonify({'message': 'Queue paused successfully.', 'status': 'paused'}), 200
+
+@app.route('/api/queue/run', methods=['POST'])
+def run_queue():
+    global queue_paused
+    queue_paused = False
+    logger.info("Queue resumed.")
+    return jsonify({'message': 'Queue resumed successfully.', 'status': 'running'}), 200
+
+@app.route('/api/queue/status', methods=['GET'])
+def get_queue_status():
+    return jsonify({'status': 'paused' if queue_paused else 'running'}), 200
+
+# --- Server Control API Routes ---
+@app.route('/api/servers/<path:server_url>/toggle', methods=['POST'])
+def toggle_server(server_url):
+    # Note: server_url might need decoding if it contains special characters, 
+    # but Flask usually handles basic URL path decoding. Test this.
+    # For simplicity, assume basic URLs for now.
+    
+    with server_lock:
+        if server_url not in server_status:
+            # If server was added via config UI but app not restarted, it might not be here yet.
+            # Or if URL is mangled.
+            # Check against API_SERVERS list as well.
+            if server_url not in API_SERVERS:
+                 logger.warning(f"Attempted to toggle unknown server: {server_url}")
+                 return jsonify({'error': 'Server not found in current configuration'}), 404
+            else:
+                 # Initialize status for a server known in config but not yet in runtime status
+                 server_status[server_url] = {'available': True, 'fail_count': 0, 'next_retry_time': 0, 'enabled': True}
+
+        current_state = server_status[server_url].get('enabled', True) # Default to enabled if key missing
+        new_state = not current_state
+        server_status[server_url]['enabled'] = new_state
+        
+        # Reset availability/backoff when enabling? Maybe not, let it recover naturally.
+        # if new_state:
+        #     server_status[server_url]['available'] = True
+        #     server_status[server_url]['next_retry_time'] = 0
+            
+        action = "enabled" if new_state else "disabled"
+        logger.info(f"Server {server_url} {action}.")
+        
+    # No need to save config, this is runtime state
+    return jsonify({'message': f'Server {server_url} {action}.', 'server': server_url, 'enabled': new_state}), 200
+
+
 @app.route('/api/server_status')
 def api_server_status():
     with server_lock:
-        # Return a copy to ensure thread safety during serialization
-        # Format timestamps for better readability if desired
         status_copy = {}
         current_time = time.time()
-        for server, status in server_status.items():
+        # Use API_SERVERS as the source of truth for which servers *should* exist
+        for server in API_SERVERS:
+            status = server_status.get(server, {'available': False, 'fail_count': 0, 'next_retry_time': 0, 'enabled': False}) # Default if missing
             status_copy[server] = status.copy() # Create a copy of the inner dict
             status_copy[server]['next_retry_available_in_seconds'] = max(0, status['next_retry_time'] - current_time)
             status_copy[server]['next_retry_time_readable'] = time.ctime(status['next_retry_time']) if status['next_retry_time'] > 0 else "N/A"
+            # Ensure enabled status is included, defaulting to True if somehow missing
+            status_copy[server]['enabled'] = status.get('enabled', True) 
         return jsonify(status_copy)
 
 # --- Route to serve images safely ---
@@ -387,21 +585,70 @@ def serve_image(filename):
     except FileNotFoundError:
         return "Image not found", 404
 
+# --- Route to serve results safely ---
+@app.route('/results/<path:filename>')
+def serve_result(filename):
+    # IMPORTANT: Add security checks here in a real application 
+    # Ensure filename is safe and only accesses the intended output directory
+    results_dir = os.path.abspath('./downloads') # Or wherever api-client saves files
+    file_path = os.path.abspath(os.path.join(results_dir, filename))
+
+    # Prevent path traversal attacks
+    if not file_path.startswith(results_dir):
+        logger.warning(f"Attempted access outside results directory: {filename}")
+        return "Forbidden", 403
+        
+    try:
+        if not os.path.exists(file_path):
+             logger.error(f"Result file not found: {filename}")
+             return "Result file not found", 404
+        logger.info(f"Serving result file: {filename}")
+        return send_file(file_path, as_attachment=False) # Serve inline if possible
+    except Exception as e:
+        logger.error(f"Error serving result file {filename}: {e}")
+        return "Error serving file", 500
+
 # --- Background Worker ---
 
 def worker():
     while True:
-        job_id, params = job_queue.get() # Blocks until an item is available
+        # --- Check Pause State ---
+        while queue_paused:
+            time.sleep(1) # Wait if paused
+
+        try:
+            # Use timeout to allow checking pause state periodically
+            job_id, params = job_queue.get(timeout=1) 
+        except queue.Empty:
+            continue # No job, loop back to check pause state
+
+        # --- Check for Cancellation BEFORE Assignment ---
+        if job_status.get(job_id, {}).get('cancelled', False) or job_status.get(job_id, {}).get('status') == 'cancelled':
+            if job_status.get(job_id, {}).get('status') != 'cancelled': # Ensure status is set if only flag was true
+                job_status[job_id]['status'] = 'cancelled'
+                job_status[job_id]['output'].append("Job cancelled before server assignment.")
+                logger.info(f"Worker found job {job_id} cancelled before assignment.")
+            job_queue.task_done()
+            continue # Skip to the next job
 
         # --- Server Selection ---
         assigned_server = None
         while assigned_server is None:
+            # Check pause state again within the server selection loop
+            if queue_paused:
+                 print(f"Queue paused while selecting server for job {job_id}. Re-queuing.")
+                 logger.info(f"Queue paused while selecting server for job {job_id}. Re-queuing.")
+                 job_queue.put((job_id, params)) # Put job back
+                 assigned_server = "paused" # Special value to break loop
+                 break
+
             current_time = time.time()
             with server_lock:
                 # Find the best available server (least recently failed or ready for retry)
                 candidates = []
                 for server, status in server_status.items():
-                    if status['available'] and current_time >= status['next_retry_time']:
+                    # Add check for 'enabled' status
+                    if status.get('enabled', True) and status['available'] and current_time >= status['next_retry_time']:
                          candidates.append((server, status['fail_count'], status['next_retry_time']))
 
                 if candidates:
@@ -421,8 +668,23 @@ def worker():
                      #if waiting_servers or all_servers_busy:
                           # print(f"No servers immediately available for job {job_id}. Waiting...") # Less verbose debugging
                           # pass
+                     # Add a check here too in case it was cancelled while waiting for a server
+                     if job_status.get(job_id, {}).get('cancelled', False):
+                         job_status[job_id]['status'] = 'cancelled'
+                         job_status[job_id]['output'].append("Job cancelled while waiting for server.")
+                         logger.info(f"Worker found job {job_id} cancelled while waiting for server.")
+                         job_queue.task_done()
+                         assigned_server = "cancelled" # Special value to break outer loop
+                         break # Break inner server selection loop
                      time.sleep(0.5) # Wait before checking again
+        
+        if assigned_server in ["cancelled", "paused"]:
+            # If paused, job was already re-queued. If cancelled, just continue.
+            job_queue.task_done() # Mark task done even if paused/cancelled here
+            continue # Skip to next job in the main worker loop
 
+        # Store assigned server in job status
+        job_status[job_id]['assigned_server'] = assigned_server 
 
         # --- Job Execution ---
         job_status[job_id]['status'] = 'running'
@@ -459,6 +721,9 @@ def worker():
                                        cwd=os.path.dirname(os.path.abspath(__file__)))
 
             output_lines = []
+            # Note: We don't have a reliable way to check the 'cancelled' flag *during* Popen
+            # without more complex async process handling. Cancellation for running jobs
+            # is primarily handled by setting the status to 'cancelling' via the API.
             for line in process.stdout:
                 stripped_line = line.strip()
                 # Limit output stored per job to avoid memory issues? Maybe later.
@@ -468,7 +733,17 @@ def worker():
 
             process.wait()
 
-            if process.returncode != 0:
+            # Check status *after* process finishes
+            if job_status.get(job_id, {}).get('status') == 'cancelling':
+                 # If it was marked cancelling, update to cancelled now that process finished
+                 job_status[job_id]['status'] = 'cancelled'
+                 job_status[job_id]['output'].append("Job process finished after cancellation request.")
+                 logger.warning(f"Job Finished After Cancel - ID: {job_id}, Server: {assigned_server}. Final RC: {process.returncode}")
+                 job_failed = True # Treat as failure for server backoff purposes? Or just cancelled? Let's treat as cancelled.
+                 job_failed = False # Override: Treat as cancelled, don't penalize server unless it actually errored.
+                 error_message = "Job cancelled by user." # Set message for logging/status
+                 # Skip normal success/fail logic below if cancelled
+            elif process.returncode != 0:
                 job_failed = True
                 # More specific error message
                 error_message = f"Job script failed on {assigned_server} with return code: {process.returncode}"
@@ -505,16 +780,28 @@ def worker():
                     logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}', UseTeaCache: {teacache_status}")
 
         except Exception as e:
-            job_failed = True
-            error_message = f"Exception during job execution on {assigned_server}: {e}"
-            job_status[job_id]['output'].append(error_message)
-            print(f"Job {job_id} encountered exception on {assigned_server}: {e}")
+            # Check if cancelled during exception handling
+            if job_status.get(job_id, {}).get('status') == 'cancelling':
+                 job_status[job_id]['status'] = 'cancelled'
+                 job_status[job_id]['output'].append(f"Job exception occurred after cancellation request: {e}")
+                 logger.warning(f"Job Exception After Cancel - ID: {job_id}, Server: {assigned_server}. Error: {e}")
+                 job_failed = False # Treat as cancelled
+                 error_message = "Job cancelled by user (exception occurred)."
+            else:
+                 job_failed = True
+                 error_message = f"Exception during job execution on {assigned_server}: {e}"
+                 job_status[job_id]['output'].append(error_message)
+                 print(f"Job {job_id} encountered exception on {assigned_server}: {e}")
 
         finally:
-            server_needs_release = True # Assume server needs release unless failed
-            if job_failed:
+            # --- Server Release / Re-queue Logic ---
+            server_needs_release = True 
+            # Check final status - if it ended up as 'cancelled' or 'cancelling', don't re-queue
+            final_status = job_status.get(job_id, {}).get('status')
+            
+            if job_failed and final_status not in ['cancelled', 'cancelling']:
                 # Failure: Penalize server, re-queue job, mark server available for future (after backoff)
-                job_status[job_id]['status'] = 'failed_will_retry' # Status indicates it will be tried again
+                job_status[job_id]['status'] = 'failed_will_retry' 
                 job_status[job_id]['output'].append(f"Job failed on {assigned_server}. Re-queuing.")
                 print(f"Job {job_id} failed on {assigned_server}. Applying backoff and re-queuing.")
                 if ENABLE_JOB_LOGGING:
@@ -536,17 +823,40 @@ def worker():
                 if ENABLE_JOB_LOGGING:
                     logger.info(f"Job Re-queued - ID: {job_id}")
                 server_needs_release = False # Availability already set in backoff logic
+            elif final_status in ['cancelled', 'cancelling']:
+                 # Job was cancelled, don't re-queue. Release server normally (no penalty).
+                 logger.info(f"Job {job_id} ended with status {final_status}. Server {assigned_server} will be released without penalty.")
+                 job_failed = False # Ensure it's not treated as a failure for release logic
+                 server_needs_release = True # Ensure server is released below
 
-            # Release the server lock only if the job succeeded
+            # Release the server lock if needed (job succeeded or was cancelled)
             if server_needs_release:
                  with server_lock:
-                      # Double-check it should be available
-                      if not server_status[assigned_server]['available']:
-                         server_status[assigned_server]['available'] = True
-                         # Resetting time just in case, although it should have been done on success path
-                         server_status[assigned_server]['next_retry_time'] = 0
-                         print(f"Server {assigned_server} explicitly released (job success).")
+                      # Check if the server still exists in the status dict (might have been removed by config change)
+                      if assigned_server in server_status:
+                          # Ensure it's marked available and reset backoff if it wasn't a failure
+                          if not job_failed: 
+                              server_status[assigned_server]['fail_count'] = 0 # Reset fails on success/cancel
+                              server_status[assigned_server]['next_retry_time'] = 0
+                          
+                          # Always mark available if it wasn't already (unless in backoff)
+                          current_time = time.time()
+                          if not server_status[assigned_server]['available'] and current_time >= server_status[assigned_server]['next_retry_time']:
+                             server_status[assigned_server]['available'] = True
+                             print(f"Server {assigned_server} explicitly released (job success/cancelled).")
+                          elif not server_status[assigned_server]['available']:
+                              print(f"Server {assigned_server} remains unavailable due to backoff.")
+                          else:
+                              # If it was already available (e.g. backoff finished), ensure fail count/time reset if needed
+                              if not job_failed:
+                                   server_status[assigned_server]['fail_count'] = 0 
+                                   server_status[assigned_server]['next_retry_time'] = 0
+                              print(f"Server {assigned_server} was already available, state updated if necessary.")
+                      else:
+                          print(f"Server {assigned_server} no longer in config, cannot release.")
 
+            # Save queue state after job completion/failure/cancellation
+            save_queue_state() 
 
             job_queue.task_done() # Signal task completion for queue management
 
@@ -560,6 +870,12 @@ if __name__ == '__main__':
     # Ensure templates directory exists
     if not os.path.exists('templates'):
         os.makedirs('templates')
+
+    # Load initial queue state BEFORE starting workers
+    was_paused_on_load = load_queue_state()
+
+    # Register saving queue state on exit
+    atexit.register(save_queue_state)
         
     # Start background worker thread(s)
     # Match the number of workers to the number of API servers for concurrency
@@ -571,8 +887,12 @@ if __name__ == '__main__':
 
     if ENABLE_JOB_LOGGING:
         logger.info(f"Starting Flask server with {num_workers} workers on port {cli_args.port}.")
+        if was_paused_on_load:
+             logger.info("Queue was paused on startup due to restored jobs.")
     else:
         print(f"Job logging disabled via config. Starting server on port {cli_args.port}.")
+        if was_paused_on_load:
+             print("Queue was paused on startup due to restored jobs.")
 
     if ENABLE_JOB_LOGGING:
         logger.info(f"Loaded options: {app_options}")

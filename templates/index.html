@@ -137,8 +137,16 @@
                 </div>
             </div>
             <div class="bg-white p-3 rounded-lg shadow-md"> <!-- Job Status Card - Reduced padding -->
-                 <h2 class="text-base font-semibold mb-2 border-b border-gray-200 pb-1.5 text-gray-700">Job Status</h2> <!-- Reduced size/spacing -->
-                 <div id="job-status-list" class="space-y-2 text-xs"> <!-- Reduced spacing/font -->
+                 <div class="flex justify-between items-center mb-2 border-b border-gray-200 pb-1.5">
+                     <h2 class="text-base font-semibold text-gray-700">Job Status</h2>
+                     <!-- Queue Controls -->
+                     <div class="flex space-x-1.5">
+                         <button id="run-queue-btn" onclick="runQueue()" title="Resume processing new jobs" class="text-xs bg-green-500 hover:bg-green-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed">Run</button>
+                         <button id="pause-queue-btn" onclick="pauseQueue()" title="Stop processing new jobs" class="text-xs bg-yellow-500 hover:bg-yellow-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed">Pause</button>
+                         <button id="clear-queue-btn" onclick="clearQueue()" title="Remove all queued/retry jobs" class="text-xs bg-red-500 hover:bg-red-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out">Clear</button>
+                     </div>
+                 </div>
+                 <div id="job-status-list" class="space-y-2 text-xs max-h-[calc(100vh-20rem)] overflow-y-auto"> <!-- Adjusted max-height -->
                      <p class="text-gray-500">Loading job status...</p>
                  </div>
             </div>
@@ -199,6 +207,9 @@
     const modalDuration = document.getElementById('modalDuration');
     const modalMessage = document.getElementById('modalMessage');
     const configApiServersTextarea = document.getElementById('cfg-api-servers');
+    const runQueueBtn = document.getElementById('run-queue-btn');
+    const pauseQueueBtn = document.getElementById('pause-queue-btn');
+    const clearQueueBtn = document.getElementById('clear-queue-btn');
 
     function setupModal(imagePath, imageName) {
         modalImagePath.value = imagePath;
@@ -347,6 +358,77 @@
             });
     }
 
+    // --- Queue Control Functions ---
+    function updateQueueButtons(status) {
+        if (status === 'paused') {
+            pauseQueueBtn.disabled = true;
+            runQueueBtn.disabled = false;
+            pauseQueueBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            runQueueBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        } else { // running
+            pauseQueueBtn.disabled = false;
+            runQueueBtn.disabled = true;
+            pauseQueueBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            runQueueBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+    }
+
+    function fetchQueueStatus() {
+        fetch("{{ url_for('get_queue_status') }}")
+            .then(response => response.json())
+            .then(data => {
+                updateQueueButtons(data.status);
+            })
+            .catch(error => console.error('Error fetching queue status:', error));
+    }
+
+    function pauseQueue() {
+        pauseQueueBtn.disabled = true; // Disable immediately
+        fetch("{{ url_for('pause_queue') }}", { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                console.log(data.message);
+                updateQueueButtons('paused');
+            })
+            .catch(error => {
+                console.error('Error pausing queue:', error);
+                pauseQueueBtn.disabled = false; // Re-enable on error
+            });
+    }
+
+    function runQueue() {
+        runQueueBtn.disabled = true; // Disable immediately
+        fetch("{{ url_for('run_queue') }}", { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                console.log(data.message);
+                updateQueueButtons('running');
+            })
+            .catch(error => {
+                console.error('Error resuming queue:', error);
+                runQueueBtn.disabled = false; // Re-enable on error
+            });
+    }
+
+    function clearQueue() {
+        if (!confirm('Are you sure you want to remove all queued and waiting-to-retry jobs? This cannot be undone.')) {
+            return;
+        }
+        clearQueueBtn.disabled = true;
+        clearQueueBtn.textContent = 'Clearing...';
+        fetch("{{ url_for('clear_queue') }}", { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                console.log(data.message);
+                fetchJobStatus(); // Refresh job list immediately
+            })
+            .catch(error => console.error('Error clearing queue:', error))
+            .finally(() => {
+                 clearQueueBtn.disabled = false;
+                 clearQueueBtn.textContent = 'Clear';
+            });
+    }
+
     // --- Job Status Polling ---
     const jobStatusList = document.getElementById('job-status-list');
     const serverStatusList = document.getElementById('server-status-list');
@@ -365,16 +447,60 @@
         }
     }
 
+    function cancelJob(jobId) {
+        const button = document.getElementById(`cancel-btn-${jobId}`);
+        if (button) {
+            button.textContent = 'Cancelling...';
+            button.disabled = true;
+            button.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+
+        fetch(`/api/jobs/${jobId}/cancel`, { // Use the new endpoint
+            method: 'POST',
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log(`Cancel response for ${jobId}:`, data);
+            // Refresh status immediately to show 'cancelling' or 'cancelled'
+            fetchJobStatus(); 
+            // Optionally display a message from 'data.message' or 'data.error'
+        })
+        .catch(error => {
+            console.error(`Error cancelling job ${jobId}:`, error);
+            if (button) {
+                 button.textContent = 'Cancel Failed';
+                 // Re-enable after a delay? Or leave disabled?
+                 setTimeout(() => {
+                     if(document.getElementById(`cancel-btn-${jobId}`)){ // Check if element still exists
+                         document.getElementById(`cancel-btn-${jobId}`).textContent = 'Cancel';
+                         document.getElementById(`cancel-btn-${jobId}`).disabled = false;
+                         document.getElementById(`cancel-btn-${jobId}`).classList.remove('opacity-50', 'cursor-not-allowed');
+                     }
+                 }, 2000);
+            }
+        });
+    }
+
+
     function fetchJobStatus() {
         fetch("{{ url_for('api_jobs') }}")
             .then(response => response.json())
             .then(data => {
                 jobStatusList.innerHTML = ''; // Clear current list
                 const jobIds = Object.keys(data).sort((a, b) => {
-                    // ... existing sort logic ...
-                    const timeA = data[a].creation_time || '';
-                    const timeB = data[b].creation_time || '';
-                    return timeB.localeCompare(timeA); 
+                    const statusOrder = { 'running': 1, 'cancelling': 2, 'queued': 3, 'failed_will_retry': 4, 'completed': 5, 'failed': 6, 'cancelled': 7 }; // Adjusted order
+                    const statusA = statusOrder[data[a].status] || 99;
+                    const statusB = statusOrder[data[b].status] || 99;
+                    if (statusA !== statusB) return statusA - statusB;
+                    // Fallback sort by creation time (newest first)
+                    const timeA = data[a].creation_time || '1970-01-01T00:00:00Z'; // Add default for sorting
+                    const timeB = data[b].creation_time || '1970-01-01T00:00:00Z';
+                    // Attempt date comparison if possible, otherwise string compare
+                    try {
+                         return new Date(timeB) - new Date(timeA);
+                    } catch (e) {
+                         return timeB.localeCompare(timeA); 
+                    }
                 });
 
                 if (jobIds.length === 0) {
@@ -404,8 +530,25 @@
                          logText = `<p class="text-xs text-orange-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">Error: ${job.output[job.output.length - 1]}</p>`;
                     } else if (job.status === 'failed' && job.output.length > 0) {
                          logText = `<p class="text-xs text-red-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">Error: ${job.output[job.output.length - 1]}</p>`;
+                    } else if (job.status === 'cancelling' && job.output.length > 0) {
+                         logText = `<p class="text-xs text-gray-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">${job.output[job.output.length - 1]}</p>`;
+                    } else if (job.status === 'cancelled' && job.output.length > 0) {
+                         logText = `<p class="text-xs text-gray-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">${job.output[job.output.length - 1]}</p>`;
                     }
 
+                    // --- Action Buttons/Links ---
+                    let actionHtml = '';
+                    if (['queued', 'running', 'failed_will_retry'].includes(job.status)) {
+                        actionHtml = `<button id="cancel-btn-${jobId}" onclick="cancelJob('${jobId}')" class="text-xs bg-red-500 hover:bg-red-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out">Cancel</button>`;
+                    } else if (job.status === 'cancelling') {
+                         actionHtml = `<span class="text-xs text-gray-500 italic">Cancelling...</span>`;
+                    } else if (job.status === 'completed' && job.output_filename) {
+                        // Use url_for to build the base path for results
+                        const resultUrl = "{{ url_for('serve_result', filename='') }}" + job.output_filename;
+                        actionHtml = `<a href="${resultUrl}" target="_blank" class="text-xs bg-green-500 hover:bg-green-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out">View</a>`;
+                        // Add a download link as well
+                        actionHtml += ` <a href="${resultUrl}" download="${job.output_filename}" class="ml-1 text-xs bg-blue-500 hover:bg-blue-600 text-white font-semibold py-0.5 px-2 rounded transition duration-150 ease-in-out">Download</a>`;
+                    }
 
                     jobElement.innerHTML = `
                         <div class="flex justify-between items-start mb-1"> <!-- Reduced margin -->
@@ -420,6 +563,7 @@
                             ${outputFilename}
                         </div>
                         ${logText}
+                        ${actionHtml ? `<div class="mt-2 text-right">${actionHtml}</div>` : ''} <!-- Actions aligned right -->
                     `;
                     jobStatusList.appendChild(jobElement);
                 });
@@ -480,8 +624,33 @@
             });
     }
 
+    // --- Server Status & Control ---
+    function toggleServer(serverUrl) {
+        const button = document.getElementById(`toggle-server-${btoa(serverUrl)}`); // Use base64 for ID safety
+        if (button) {
+            button.disabled = true;
+            button.textContent = '...';
+        }
+
+        fetch(`/api/servers/${encodeURIComponent(serverUrl)}/toggle`, { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                console.log(data.message);
+                fetchServerStatus(); // Refresh server list to show new state
+            })
+            .catch(error => {
+                console.error(`Error toggling server ${serverUrl}:`, error);
+                 if (button) { // Re-enable button on error
+                     button.disabled = false;
+                     // Restore text based on assumed previous state (might be wrong)
+                     button.textContent = button.textContent === 'Disable' ? 'Enable' : 'Disable'; 
+                 }
+            });
+    }
+
     // Initial fetch and periodic refresh
     fetchConfig(); // Fetch config on load
+    fetchQueueStatus(); // Fetch initial queue status
     fetchJobStatus();
     fetchServerStatus();
     setInterval(fetchJobStatus, 5000); // Refresh jobs every 5 seconds
