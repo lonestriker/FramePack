@@ -811,6 +811,41 @@
                     }
                     // --- End Display Progress ---
 
+                    // --- Display Elapsed Time ---
+                    let elapsedTimeDisplay = '';
+                    if (job.start_time) {
+                        // For running jobs, calculate elapsed time from start_time to now
+                        if (job.status === 'running') {
+                            const startTime = new Date(job.start_time);
+                            const now = new Date();
+                            const elapsedSeconds = (now - startTime) / 1000;
+                            
+                            let timeStr;
+                            if (elapsedSeconds < 60) {
+                                timeStr = `${elapsedSeconds.toFixed(1)}s`;
+                            } else {
+                                const minutes = Math.floor(elapsedSeconds / 60);
+                                const seconds = Math.round(elapsedSeconds % 60);
+                                timeStr = `${minutes}m ${seconds}s`;
+                            }
+                            elapsedTimeDisplay = `<div class="text-[10px] text-blue-600 mt-0.5">Elapsed: ${timeStr}</div>`;
+                        }
+                        // For completed jobs, use the stored generation_duration_seconds
+                        else if (job.status === 'completed' && job.generation_duration_seconds) {
+                            const duration = job.generation_duration_seconds;
+                            let timeStr;
+                            if (duration < 60) {
+                                timeStr = `${duration.toFixed(1)}s`;
+                            } else {
+                                const minutes = Math.floor(duration / 60);
+                                const seconds = Math.round(duration % 60);
+                                timeStr = `${minutes}m ${seconds}s`;
+                            }
+                            elapsedTimeDisplay = `<div class="text-[10px] text-green-600 mt-0.5">Generation time: ${timeStr}</div>`;
+                        }
+                    }
+                    // --- End Display Elapsed Time ---
+
                     // --- Display Detailed Message ---
                     let messageDisplay = '';
                     // Show message for running, cancelling, or failed_will_retry states if available
@@ -823,22 +858,6 @@
                          messageDisplay = `<div class="text-[10px] text-red-600 mt-0.5 truncate" title="${job.message}">${shortMessage}</div>`;
                     }
                     // --- End Display Detailed Message ---
-
-                    // --- Display Elapsed Time for Completed Jobs ---
-                    let elapsedTimeDisplay = '';
-                    if (job.status === 'completed' && job.generation_duration_seconds) {
-                        const duration = job.generation_duration_seconds;
-                        let timeStr;
-                        if (duration < 60) {
-                            timeStr = `${duration.toFixed(1)}s`;
-                        } else {
-                            const minutes = Math.floor(duration / 60);
-                            const seconds = Math.round(duration % 60);
-                            timeStr = `${minutes}m ${seconds}s`;
-                        }
-                        elapsedTimeDisplay = `<div class="text-[10px] text-green-600 mt-0.5">Generation time: ${timeStr}</div>`;
-                    }
-                    // --- End Display Elapsed Time ---
 
                     jobElement.innerHTML = `
                         <div class="flex justify-between items-start mb-1"> <!-- Reduced margin -->

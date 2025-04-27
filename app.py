@@ -731,13 +731,11 @@ def worker():
         job_status[job_id]['start_time'] = start_time
         # --- End Record Start Time ---
 
-        # Store assigned server in job status
-        job_status[job_id]['assigned_server'] = assigned_server 
-
         # --- Job Execution ---
         job_status[job_id]['status'] = 'running'
         job_status[job_id]['progress'] = 0 # Reset progress when starting
         job_status[job_id]['message'] = 'Starting execution...' # Update message
+        job_status[job_id]['start_time'] = datetime.utcnow().isoformat() + 'Z'  # ISO format with UTC timezone
 
         job_failed = False
         error_message = ""
