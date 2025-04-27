@@ -9,6 +9,7 @@ import json
 import math
 import logging
 from datetime import datetime
+import argparse # Import argparse
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # Needed for flashing messages and session
@@ -40,11 +41,15 @@ config_data = load_config()
 API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
 ENABLE_JOB_LOGGING = config_data.get('ENABLE_JOB_LOGGING', True) # Get logging flag
 
+# Define constants used in options loading *before* load_options
+MAX_DURATION = 120
+DEFAULT_DURATION = 5
+
 # --- Options Loading/Saving ---
 OPTIONS_FILE = 'options.json'
 DEFAULT_OPTIONS = {
     'prompt': '',
-    'duration': 5,
+    'duration': DEFAULT_DURATION, # Use constant here too
     'use_teacache': True # Corresponds to NOT using --no-teacache
 }
 
@@ -57,10 +62,11 @@ def load_options():
                 # Safely update options
                 options['prompt'] = str(loaded.get('prompt', DEFAULT_OPTIONS['prompt']))
                 try:
-                    duration_val = int(loaded.get('duration', DEFAULT_OPTIONS['duration']))
+                    # Use MAX_DURATION and DEFAULT_DURATION here
+                    duration_val = int(loaded.get('duration', DEFAULT_DURATION))
                     options['duration'] = max(1, min(MAX_DURATION, duration_val))
                 except (ValueError, TypeError):
-                    options['duration'] = DEFAULT_OPTIONS['duration'] # Fallback on conversion error
+                    options['duration'] = DEFAULT_DURATION # Fallback on conversion error
                 options['use_teacache'] = bool(loaded.get('use_teacache', DEFAULT_OPTIONS['use_teacache']))
                 return options
         else:
@@ -100,8 +106,6 @@ MAX_RETRY_DELAY = 60 # seconds
 
 # Configuration Constants (can still be defined here if needed)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
-MAX_DURATION = 120
-DEFAULT_DURATION = 5
 
 # --- In-memory state (for simplicity, replace with DB/proper state management later) ---
 job_queue = queue.Queue()
@@ -432,6 +436,11 @@ def worker():
 
 # --- Main Execution ---
 if __name__ == '__main__':
+    # Add argument parsing for port
+    parser = argparse.ArgumentParser(description="FramePack Web UI")
+    parser.add_argument("--port", type=int, default=5001, help="Port number to run the web server on")
+    cli_args = parser.parse_args()
+
     # Ensure templates directory exists
     if not os.path.exists('templates'):
         os.makedirs('templates')
@@ -445,13 +454,14 @@ if __name__ == '__main__':
         thread.start()
 
     if ENABLE_JOB_LOGGING:
-        logger.info(f"Starting Flask server with {num_workers} workers.")
+        logger.info(f"Starting Flask server with {num_workers} workers on port {cli_args.port}.")
     else:
-        print("Job logging disabled via config.")
+        print(f"Job logging disabled via config. Starting server on port {cli_args.port}.")
 
     if ENABLE_JOB_LOGGING:
         logger.info(f"Loaded options: {app_options}")
     else:
         print(f"Loaded options: {app_options}")
         
-    app.run(debug=True, host='0.0.0.0', port=5001) # Run on all available interfaces
+    # Use the parsed port
+    app.run(debug=True, host='0.0.0.0', port=cli_args.port)

@@ -3,68 +3,72 @@
 {% block title %}FramePack UI{% endblock %}
 
 {% block content %}
-<div class="flex flex-col md:flex-row gap-4">
+<div class="flex flex-col lg:flex-row gap-6"> <!-- Increased gap -->
 
     <!-- Main Content Area -->
-    <div class="flex-grow">
-        <h1 class="text-3xl font-bold mb-4">FramePack</h1>
+    <div class="flex-grow lg:w-3/4"> <!-- Adjusted width proportions -->
+        <h1 class="text-2xl font-bold mb-5 text-gray-700">FramePack</h1> <!-- Reduced size/margin -->
 
         <!-- Error Display -->
         {% if error %}
-            <div id="error-message" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
-                <strong class="font-bold">Error:</strong>
-                <span class="block sm:inline">{{ error }}</span>
-                <button type="button" class="absolute top-0 bottom-0 right-0 px-4 py-3" onclick="document.getElementById('error-message').style.display='none'">
-                    <svg class="fill-current h-6 w-6 text-red-500" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><title>Close</title><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
-                </button>
+            <div id="error-message" class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-5 rounded-r-lg shadow text-sm" role="alert"> <!-- Reduced margin, added text-sm -->
+                <div class="flex justify-between items-center">
+                    <div>
+                        <strong class="font-bold">Error:</strong>
+                        <span class="block sm:inline ml-2">{{ error }}</span>
+                    </div>
+                    <button type="button" class="text-red-500 hover:text-red-700" onclick="document.getElementById('error-message').style.display='none'">
+                        <svg class="fill-current h-5 w-5" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><title>Close</title><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
+                    </button>
+                </div>
             </div>
         {% endif %}
 
         <!-- Directory Selector (Collapsible Logic via presence of 'directory') -->
-        <div id="directory-selector" class="bg-white p-4 rounded shadow mb-4 {% if directory %}hidden{% endif %}">
-             <h2 class="text-xl font-semibold mb-2">Select Image Directory</h2>
+        <div id="directory-selector" class="bg-white p-4 rounded-lg shadow-md mb-5 {% if directory %}hidden{% endif %}"> <!-- Reduced padding/margin -->
+             <h2 class="text-lg font-semibold mb-3 text-gray-700">Select Image Directory</h2> <!-- Reduced size -->
              <form method="POST" action="{{ url_for('index') }}">
                  <div class="flex items-center">
-                     <input type="text" name="directory" class="flex-grow border border-gray-300 rounded-l px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="/path/to/your/images">
-                     <button type="submit" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-r">Load Images</button>
+                     <input type="text" name="directory" class="flex-grow border border-gray-300 rounded-l-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" placeholder="/path/to/your/images"> <!-- Adjusted padding/font -->
+                     <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-1.5 px-3 rounded-r-md text-sm transition duration-150 ease-in-out">Load Images</button> <!-- Adjusted padding/font -->
                  </div>
              </form>
         </div>
         
         <!-- Directory Display (Shown when directory is selected) -->
         {% if directory %}
-        <div class="bg-gray-200 p-3 rounded shadow mb-4 flex justify-between items-center">
-            <span class="text-gray-700">Current Directory: <code class="bg-gray-300 px-1 rounded">{{ directory }}</code></span>
-            <a href="{{ url_for('index') }}" class="text-sm bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-3 rounded">Change Directory</a>
+        <div class="bg-indigo-100 border border-indigo-200 p-3 rounded-lg shadow-sm mb-5 flex justify-between items-center text-sm"> <!-- Reduced padding/margin, added text-sm -->
+            <span class="text-indigo-800">Current Directory: <code class="bg-indigo-200 text-indigo-900 px-1.5 py-0.5 rounded text-xs">{{ directory }}</code></span> <!-- Adjusted code style -->
+            <a href="{{ url_for('index') }}" class="text-xs bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-2 rounded-md transition duration-150 ease-in-out">Change Directory</a> <!-- Adjusted size -->
         </div>
         {% endif %}
 
         <!-- Options Accordion -->
-        <div id="options-accordion" class="bg-white p-4 rounded shadow mb-4">
+        <div id="options-accordion" class="bg-white rounded-lg shadow-md mb-5"> <!-- Reduced margin -->
             <details class="group">
-                 <summary class="flex justify-between items-center font-medium cursor-pointer list-none">
-                     <span class="text-lg">Options</span>
-                     <span class="transition group-open:rotate-180">
-                         <svg fill="none" height="24" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="24"><path d="M6 9l6 6 6-6"></path></svg>
+                 <summary class="flex justify-between items-center font-medium cursor-pointer list-none p-3"> <!-- Reduced padding -->
+                     <span class="text-base text-gray-700">Options</span> <!-- Reduced size -->
+                     <span class="transition group-open:rotate-180 text-gray-500">
+                         <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg> <!-- Reduced icon size -->
                      </span>
                  </summary>
-                 <div class="text-neutral-600 mt-3 group-open:animate-fadeIn">
-                     <form id="optionsForm" class="space-y-3">
+                 <div class="text-gray-600 mt-0 group-open:animate-fadeIn border-t border-gray-200 p-4 text-sm"> <!-- Added text-sm -->
+                     <form id="optionsForm" class="space-y-3"> <!-- Reduced spacing -->
                          <div>
-                             <label for="opt-prompt" class="block text-sm font-medium text-gray-700">Default Prompt</label>
-                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">{{ options.prompt }}</textarea>
+                             <label for="opt-prompt" class="block text-xs font-medium text-gray-700 mb-1">Default Prompt</label> <!-- Reduced size -->
+                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">{{ options.prompt }}</textarea>
                          </div>
                          <div>
-                             <label for="opt-duration" class="block text-sm font-medium text-gray-700">Default Duration (seconds)</label>
-                             <input type="number" id="opt-duration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                             <label for="opt-duration" class="block text-xs font-medium text-gray-700 mb-1">Default Duration (seconds)</label> <!-- Reduced size -->
+                             <input type="number" id="opt-duration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
                          </div>
-                         <div class="flex items-center">
-                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" {% if options.use_teacache %}checked{% endif %} class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                             <label for="opt-use_teacache" class="ml-2 block text-sm text-gray-900">Use TeaCache (Recommended)</label>
+                         <div class="flex items-center pt-1"> 
+                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" {% if options.use_teacache %}checked{% endif %} class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                             <label for="opt-use_teacache" class="ml-2 block text-xs text-gray-900">Use TeaCache (Recommended)</label> <!-- Reduced size -->
                          </div>
-                         <div class="flex justify-end items-center space-x-2">
-                             <span id="options-save-status" class="text-sm text-green-600"></span>
-                             <button type="button" onclick="saveOptions()" class="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded text-sm">Save Options</button>
+                         <div class="flex justify-end items-center space-x-3 pt-2"> 
+                             <span id="options-save-status" class="text-xs text-green-600 font-medium"></span> <!-- Reduced size -->
+                             <button type="button" onclick="saveOptions()" class="bg-green-600 hover:bg-green-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Options</button> <!-- Reduced size/padding -->
                          </div>
                      </form>
                  </div>
@@ -74,76 +78,83 @@
 
         <!-- Image Grid -->
         {% if images %}
-            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"> <!-- Adjusted columns/gap -->
                 {% for image in images %}
-                <div class="bg-white rounded shadow overflow-hidden cursor-pointer hover:shadow-lg transition-shadow duration-200" 
+                <!-- Removed fixed height, adjusted padding/flex for image card -->
+                <div class="bg-white rounded-lg shadow-md overflow-hidden cursor-pointer flex flex-col items-center justify-start card-hover-effect" 
                      onclick="setupModal('{{ image.path | e }}', '{{ image.name | e }}')">
-                    <img src="{{ url_for('serve_image', filename=image.path) }}" alt="{{ image.name }}" class="w-full h-32 object-cover">
-                    <div class="p-2">
-                        <p class="text-xs text-gray-700 truncate" title="{{ image.name }}">{{ image.name }}</p>
+                    <!-- Adjusted image container: aspect ratio and padding -->
+                    <div class="w-full aspect-square flex items-center justify-center overflow-hidden p-1 bg-gray-100"> 
+                        <img src="{{ url_for('serve_image', filename=image.path) }}" alt="{{ image.name }}" class="max-h-full max-w-full object-contain"> 
+                    </div>
+                    <!-- Adjusted footer padding and text size -->
+                    <div class="p-1.5 w-full text-center bg-gray-50 border-t border-gray-100"> 
+                        <p class="text-[11px] text-gray-600 truncate font-medium" title="{{ image.name }}">{{ image.name }}</p> <!-- Smaller font -->
                     </div>
                 </div>
                 {% endfor %}
             </div>
         {% elif directory %}
-            <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative" role="alert">
+            <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-r-lg shadow text-sm" role="alert"> <!-- Added text-sm -->
                 No images found in the selected directory.
             </div>
         {% endif %}
     </div>
 
     <!-- Sticky Job Status Sidebar -->
-    <div class="w-full md:w-1/4 lg:w-1/5 flex-shrink-0">
-        <div class="sticky-sidebar bg-white p-4 rounded shadow">
-            <h2 class="text-xl font-semibold mb-3 border-b pb-2">Job Status</h2>
-            <div id="job-status-list" class="space-y-3 text-sm">
-                <!-- Job status will be loaded here by JS -->
-                <p class="text-gray-500">Loading job status...</p>
+    <div class="w-full lg:w-1/4 flex-shrink-0"> 
+        <div class="sticky-sidebar bg-gray-100 p-0 rounded-lg"> 
+            <div class="bg-white p-3 rounded-lg shadow-md mb-4"> <!-- Server Status Card - Reduced padding -->
+                <h2 class="text-base font-semibold mb-2 border-b border-gray-200 pb-1.5 text-gray-700">Server Status</h2> <!-- Reduced size/spacing -->
+                <div id="server-status-list" class="space-y-1.5 text-xs max-h-40 overflow-y-auto"> <!-- Reduced spacing/font -->
+                    <p class="text-gray-500">Loading server status...</p>
+                </div>
             </div>
-             <h2 class="text-xl font-semibold mb-3 border-b pb-2 mt-4">Server Status</h2>
-             <div id="server-status-list" class="space-y-2 text-sm">
-                 <!-- Server status will be loaded here by JS -->
-                 <p class="text-gray-500">Loading server status...</p>
-             </div>
+            <div class="bg-white p-3 rounded-lg shadow-md"> <!-- Job Status Card - Reduced padding -->
+                 <h2 class="text-base font-semibold mb-2 border-b border-gray-200 pb-1.5 text-gray-700">Job Status</h2> <!-- Reduced size/spacing -->
+                 <div id="job-status-list" class="space-y-2 text-xs"> <!-- Reduced spacing/font -->
+                     <p class="text-gray-500">Loading job status...</p>
+                 </div>
+            </div>
         </div>
     </div>
 </div>
 
 
 <!-- Generation Modal (Tailwind Styled) -->
-<div id="generationModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center hidden z-50" aria-labelledby="generationModalLabel" role="dialog" aria-modal="true">
-    <div class="relative mx-auto p-5 border w-full max-w-md shadow-lg rounded-md bg-white">
-        <div class="flex justify-between items-center border-b pb-3 mb-3">
-             <h5 class="text-lg font-medium leading-6 text-gray-900" id="generationModalLabel">Generate Video</h5>
-             <button type="button" class="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm p-1.5 ml-auto inline-flex items-center" onclick="closeModal()">
-                 <svg aria-hidden="true" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414z" clip-rule="evenodd"></path></svg>
+<div id="generationModal" class="fixed inset-0 bg-gray-800 bg-opacity-75 overflow-y-auto h-full w-full flex items-center justify-center hidden z-50 p-4" aria-labelledby="generationModalLabel" role="dialog" aria-modal="true"> 
+    <div class="relative mx-auto p-5 border-0 w-full max-w-lg shadow-xl rounded-lg bg-white"> 
+        <div class="flex justify-between items-center border-b border-gray-200 pb-2 mb-4"> <!-- Reduced padding -->
+             <h5 class="text-lg font-medium leading-6 text-gray-900" id="generationModalLabel">Generate Video</h5> <!-- Reduced size -->
+             <button type="button" class="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm p-1.5 ml-auto inline-flex items-center transition duration-150 ease-in-out" onclick="closeModal()">
+                 <svg aria-hidden="true" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>
                  <span class="sr-only">Close modal</span>
              </button>
         </div>
-        <div class="mt-3">
-            <form id="generateForm">
+        <div class="mt-2"> 
+            <form id="generateForm" class="space-y-3"> <!-- Reduced spacing -->
                 <input type="hidden" id="modalImagePath" name="image_path">
-                <div class="mb-3">
-                    <label class="block text-sm font-medium text-gray-700">Image:</label>
-                    <img id="modalImagePreview" src="" alt="Selected Image" class="mt-1 max-h-40 w-auto mx-auto mb-1">
+                <div class="mb-2 text-center"> <!-- Reduced margin -->
+                    <label class="block text-xs font-medium text-gray-700 mb-1 text-left">Image:</label> <!-- Reduced size -->
+                    <img id="modalImagePreview" src="" alt="Selected Image" class="mt-1 max-h-40 w-auto mx-auto mb-1 rounded border border-gray-200"> <!-- Reduced max-height -->
                     <p id="modalImageName" class="text-center text-xs text-gray-600"></p>
                 </div>
-                <div class="mb-3">
-                    <label for="modalPrompt" class="block text-sm font-medium text-gray-700">Prompt:</label>
-                    <textarea class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" id="modalPrompt" name="prompt" rows="3">{{ options.prompt }}</textarea>
+                <div>
+                    <label for="modalPrompt" class="block text-xs font-medium text-gray-700 mb-1">Prompt:</label> <!-- Reduced size -->
+                    <textarea class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" id="modalPrompt" name="prompt" rows="3">{{ options.prompt }}</textarea>
                 </div>
-                <div class="mb-3">
-                    <label for="modalDuration" class="block text-sm font-medium text-gray-700">Duration (seconds):</label>
-                    <input type="number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" id="modalDuration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}">
+                <div>
+                    <label for="modalDuration" class="block text-xs font-medium text-gray-700 mb-1">Duration (seconds):</label> <!-- Reduced size -->
+                    <input type="number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" id="modalDuration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}">
                 </div>
             </form>
-            <div id="modalMessage" class="mt-3 text-sm"></div>
+            <div id="modalMessage" class="mt-3 text-sm"></div> <!-- Reduced margin -->
         </div>
-        <div class="mt-4 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse border-t pt-3">
-            <button type="button" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm" onclick="submitGeneration()">
+        <div class="mt-4 px-0 py-3 sm:flex sm:flex-row-reverse border-t border-gray-200 pt-3"> <!-- Reduced margin/padding -->
+            <button type="button" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-3 py-1.5 bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:ml-3 sm:w-auto transition duration-150 ease-in-out" onclick="submitGeneration()"> <!-- Reduced padding/font -->
                 Generate
             </button>
-            <button type="button" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm" onclick="closeModal()">
+            <button type="button" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-3 py-1.5 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 sm:mt-0 sm:ml-3 sm:w-auto transition duration-150 ease-in-out" onclick="closeModal()"> <!-- Reduced padding/font -->
                 Cancel
             </button>
         </div>
@@ -255,13 +266,16 @@
     const serverStatusList = document.getElementById('server-status-list');
 
     function getStatusBadge(status) {
+        // Using text-xs for badges
         switch (status) {
-            case 'completed': return '<span class="bg-green-100 text-green-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Completed</span>';
-            case 'running': return '<span class="bg-blue-100 text-blue-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Running</span>';
-            case 'queued': return '<span class="bg-yellow-100 text-yellow-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Queued</span>';
-            case 'failed_will_retry': return '<span class="bg-orange-100 text-orange-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Failed (Retrying)</span>';
-            case 'failed': return '<span class="bg-red-100 text-red-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Failed</span>'; // Assuming a final failed state might exist
-            default: return `<span class="bg-gray-100 text-gray-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">${status}</span>`;
+            case 'completed': return '<span class="inline-flex items-center bg-green-100 text-green-800 text-xs font-medium px-2 py-0.5 rounded-full">Completed</span>'; // Adjusted padding
+            case 'running': return '<span class="inline-flex items-center bg-blue-100 text-blue-800 text-xs font-medium px-2 py-0.5 rounded-full animate-pulse">Running</span>'; // Adjusted padding
+            case 'queued': return '<span class="inline-flex items-center bg-yellow-100 text-yellow-800 text-xs font-medium px-2 py-0.5 rounded-full">Queued</span>'; // Adjusted padding
+            case 'failed_will_retry': return '<span class="inline-flex items-center bg-orange-100 text-orange-800 text-xs font-medium px-2 py-0.5 rounded-full">Failed (Retrying)</span>'; // Adjusted padding
+            case 'failed': return '<span class="inline-flex items-center bg-red-100 text-red-800 text-xs font-medium px-2 py-0.5 rounded-full">Failed</span>'; // Adjusted padding
+            case 'cancelling': return '<span class="inline-flex items-center bg-gray-200 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full">Cancelling</span>'; // Adjusted padding/color
+            case 'cancelled': return '<span class="inline-flex items-center bg-gray-200 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full">Cancelled</span>'; // Adjusted padding/color
+            default: return `<span class="inline-flex items-center bg-gray-200 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full">${status}</span>`; // Adjusted padding/color
         }
     }
 
@@ -271,46 +285,62 @@
             .then(data => {
                 jobStatusList.innerHTML = ''; // Clear current list
                 const jobIds = Object.keys(data).sort((a, b) => {
-                    // Sort by status priority then potentially time if available
-                    const statusOrder = { 'running': 1, 'queued': 2, 'failed_will_retry': 3, 'completed': 4, 'failed': 5 };
-                    const statusA = statusOrder[data[a].status] || 99;
-                    const statusB = statusOrder[data[b].status] || 99;
-                    if (statusA !== statusB) return statusA - statusB;
-                    // Add time-based sorting later if needed
-                    return 0; 
+                    // ... existing sort logic ...
+                    const timeA = data[a].creation_time || '';
+                    const timeB = data[b].creation_time || '';
+                    return timeB.localeCompare(timeA); 
                 });
 
                 if (jobIds.length === 0) {
-                    jobStatusList.innerHTML = '<p class="text-gray-500">No jobs found.</p>';
+                    jobStatusList.innerHTML = '<p class="text-gray-500 text-center py-3 text-xs">No jobs found.</p>'; // Adjusted padding/font
                     return;
                 }
 
                 jobIds.forEach(jobId => {
                     const job = data[jobId];
                     const jobElement = document.createElement('div');
-                    jobElement.className = 'border-b pb-2';
+                    // Reduced padding/margin for job card
+                    jobElement.className = 'bg-white rounded-lg shadow p-2.5 mb-2 hover:shadow-md hover:bg-gray-50 transition duration-150 ease-in-out'; 
                     
-                    let outputFilename = job.output_filename ? `<span class="block text-xs text-gray-500 truncate">Output: ${job.output_filename}</span>` : '';
-                    let promptText = job.params.prompt ? `<span class="block text-xs text-gray-500 truncate" title="${job.params.prompt}">Prompt: ${job.params.prompt}</span>` : '';
-                    let imageText = job.params.image_path ? `<span class="block text-xs text-gray-500 truncate" title="${job.params.image_path}">Image: ${job.params.image_path.split(/[\\/]/).pop()}</span>` : ''; // Show only filename
+                    // Using text-xs for all details
+                    let outputFilename = job.output_filename ? `<span class="block text-xs text-gray-500 truncate" title="Output: ${job.output_filename}">Output: ${job.output_filename}</span>` : '';
+                    let promptText = job.params.prompt ? `<span class="block text-xs text-gray-500 truncate" title="Prompt: ${job.params.prompt}">Prompt: ${job.params.prompt}</span>` : '';
+                    let imageFilename = job.params.image_path ? job.params.image_path.split(/[\\/]/).pop() : 'N/A';
+                    let imageText = `<span class="block text-xs text-gray-500 truncate" title="Image: ${imageFilename}">Image: ${imageFilename}</span>`; 
+                    let durationText = job.params.duration ? `<span class="block text-xs text-gray-500">Duration: ${job.params.duration}s</span>` : '';
+                    let teacacheText = job.params.hasOwnProperty('use_teacache') ? `<span class="block text-xs text-gray-500">TeaCache: ${job.params.use_teacache ? 'On' : 'Off'}</span>` : '';
+
+                    let logText = '';
+                    // Log text also uses text-xs
+                    if (job.status === 'running' && job.output.length > 0) {
+                        logText = `<p class="text-xs text-blue-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">Log: ${job.output[job.output.length - 1]}</p>`;
+                    } else if (job.status === 'failed_will_retry' && job.output.length > 0) {
+                         logText = `<p class="text-xs text-orange-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">Error: ${job.output[job.output.length - 1]}</p>`;
+                    } else if (job.status === 'failed' && job.output.length > 0) {
+                         logText = `<p class="text-xs text-red-600 mt-1 truncate" title="${job.output[job.output.length - 1]}">Error: ${job.output[job.output.length - 1]}</p>`;
+                    }
+
 
                     jobElement.innerHTML = `
-                        <div class="flex justify-between items-center mb-1">
-                            <span class="font-semibold truncate" title="${jobId}">${jobId.substring(0, 8)}...</span>
+                        <div class="flex justify-between items-start mb-1"> <!-- Reduced margin -->
+                            <span class="font-semibold text-xs text-gray-700 truncate mr-2" title="Job ID: ${jobId}">${jobId.substring(0, 8)}...</span> <!-- Reduced font -->
                             ${getStatusBadge(job.status)}
                         </div>
-                        ${imageText}
-                        ${promptText}
-                        ${outputFilename}
-                        ${job.status === 'running' && job.output.length > 0 ? `<p class="text-xs text-gray-600 mt-1 truncate">Log: ${job.output[job.output.length - 1]}</p>` : ''}
-                        ${job.status === 'failed_will_retry' && job.output.length > 0 ? `<p class="text-xs text-orange-600 mt-1 truncate">Error: ${job.output[job.output.length - 1]}</p>` : ''}
+                        <div class="space-y-0.5 mt-1"> <!-- Reduced spacing/margin -->
+                            ${imageText}
+                            ${promptText}
+                            ${durationText}
+                            ${teacacheText}
+                            ${outputFilename}
+                        </div>
+                        ${logText}
                     `;
                     jobStatusList.appendChild(jobElement);
                 });
             })
             .catch(error => {
                 console.error('Error fetching job status:', error);
-                jobStatusList.innerHTML = '<p class="text-red-500">Error loading job status.</p>';
+                jobStatusList.innerHTML = '<p class="text-red-500 text-center py-3 text-xs">Error loading job status.</p>'; // Adjusted padding/font
             });
     }
     
@@ -322,44 +352,45 @@
                 const serverUrls = Object.keys(data).sort();
 
                 if (serverUrls.length === 0) {
-                    serverStatusList.innerHTML = '<p class="text-gray-500">No API servers configured.</p>';
+                    serverStatusList.innerHTML = '<p class="text-gray-500 text-xs">No API servers configured.</p>'; // Reduced font
                     return;
                 }
 
                 serverUrls.forEach(serverUrl => {
                     const status = data[serverUrl];
                     const serverElement = document.createElement('div');
-                    serverElement.className = 'border-b pb-1';
+                    serverElement.className = 'border-b border-gray-100 pb-1 mb-1'; // Reduced spacing
 
                     let statusText = '';
                     let statusColor = 'text-gray-500';
                     let availabilityText = '';
 
+                    // Status text uses text-xs
                     if (status.available && status.next_retry_time <= Date.now() / 1000) {
                         statusText = 'Available';
-                        statusColor = 'text-green-600';
+                        statusColor = 'text-green-600 font-semibold text-xs';
                     } else if (!status.available) {
                         statusText = 'Busy';
-                        statusColor = 'text-blue-600';
+                        statusColor = 'text-blue-600 font-semibold text-xs';
                     } else { // Available but in backoff
                         statusText = 'Backoff';
-                        statusColor = 'text-orange-600';
+                        statusColor = 'text-orange-500 font-semibold text-xs';
                         availabilityText = ` (retry in ${Math.round(status.next_retry_available_in_seconds)}s)`;
                     }
 
                     serverElement.innerHTML = `
                         <div class="flex justify-between items-center">
-                             <span class="font-medium text-xs truncate" title="${serverUrl}">${serverUrl}</span>
-                             <span class="${statusColor} font-semibold">${statusText}${availabilityText}</span>
+                             <span class="font-medium text-xs text-gray-600 truncate mr-2" title="${serverUrl}">${serverUrl}</span>
+                             <span class="${statusColor}">${statusText}${availabilityText}</span>
                         </div>
-                        <div class="text-xs text-gray-500">Fails: ${status.fail_count}</div>
+                        <div class="text-[11px] text-gray-500">Fails: ${status.fail_count}</div> <!-- Smaller font -->
                     `;
                     serverStatusList.appendChild(serverElement);
                 });
             })
             .catch(error => {
                 console.error('Error fetching server status:', error);
-                serverStatusList.innerHTML = '<p class="text-red-500">Error loading server status.</p>';
+                serverStatusList.innerHTML = '<p class="text-red-500 text-xs">Error loading server status.</p>'; // Reduced font
             });
     }
 

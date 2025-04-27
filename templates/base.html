@@ -13,27 +13,35 @@
             height: 8px;
         }
         ::-webkit-scrollbar-track {
-            background: #f1f1f1;
+            background: #f1f1f1; /* Light gray track */
         }
         ::-webkit-scrollbar-thumb {
-            background: #888;
+            background: #a0aec0; /* Medium gray thumb */
             border-radius: 4px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #555;
+            background: #718096; /* Darker gray thumb on hover */
         }
         /* Style for sticky sidebar */
         .sticky-sidebar {
             position: sticky;
-            top: 1rem; /* Adjust as needed */
-            height: calc(100vh - 2rem); /* Adjust based on top value and desired padding */
+            top: 1.5rem; /* Adjust as needed */
+            height: calc(100vh - 3rem); /* Adjust based on top value and desired padding */
             overflow-y: auto;
+        }
+        /* Simple transition for card hover */
+        .card-hover-effect {
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+        .card-hover-effect:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* Tailwind shadow-lg */
         }
     </style>
     {% block head %}{% endblock %}
 </head>
-<body class="bg-gray-100 text-gray-900">
-    <div class="container mx-auto px-4 py-4">
+<body class="bg-gray-200 text-gray-800"> <!-- Changed background -->
+    <div class="container mx-auto px-4 py-6"> <!-- Adjusted padding -->
         {% block content %}{% endblock %}
     </div>
     {% block scripts %}{% endblock %}
