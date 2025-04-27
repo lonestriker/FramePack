@@ -75,6 +75,32 @@
             </details>
         </div>
 
+        <!-- Configuration Accordion -->
+        <div id="config-accordion" class="bg-white rounded-lg shadow-md mb-5"> 
+            <details class="group">
+                 <summary class="flex justify-between items-center font-medium cursor-pointer list-none p-3"> 
+                     <span class="text-base text-gray-700">Configuration</span> 
+                     <span class="transition group-open:rotate-180 text-gray-500">
+                         <svg fill="none" height="20" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="20"><path d="M6 9l6 6 6-6"></path></svg> 
+                     </span>
+                 </summary>
+                 <div class="text-gray-600 mt-0 group-open:animate-fadeIn border-t border-gray-200 p-4 text-sm"> 
+                     <form id="configForm" class="space-y-3"> 
+                         <div>
+                             <label for="cfg-api-servers" class="block text-xs font-medium text-gray-700 mb-1">API Servers (one URL per line)</label> 
+                             <textarea id="cfg-api-servers" name="api_servers" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"></textarea>
+                             <p class="mt-1 text-xs text-gray-500">Changing servers updates where new jobs are sent. Restart app to change worker count.</p>
+                         </div>
+                         <!-- Add other config options here if needed in the future -->
+                         <div class="flex justify-end items-center space-x-3 pt-2"> 
+                             <span id="config-save-status" class="text-xs text-green-600 font-medium"></span> 
+                             <button type="button" onclick="saveConfig()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out">Save Configuration</button> 
+                         </div>
+                     </form>
+                 </div>
+            </details>
+        </div>
+
 
         <!-- Image Grid -->
         {% if images %}
@@ -172,6 +198,7 @@
     const modalPrompt = document.getElementById('modalPrompt');
     const modalDuration = document.getElementById('modalDuration');
     const modalMessage = document.getElementById('modalMessage');
+    const configApiServersTextarea = document.getElementById('cfg-api-servers');
 
     function setupModal(imagePath, imageName) {
         modalImagePath.value = imagePath;
@@ -259,6 +286,65 @@
             statusSpan.className = 'text-sm text-red-600';
             setTimeout(() => { statusSpan.textContent = ''; }, 2000);
         });
+    }
+
+    function saveConfig() {
+        const statusSpan = document.getElementById('config-save-status');
+        // Read servers from textarea, split by newline, trim whitespace, filter empty lines
+        const apiServers = configApiServersTextarea.value
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0);
+
+        const configData = {
+            API_SERVERS: apiServers
+            // Add other config fields here if they become editable
+        };
+
+        statusSpan.textContent = 'Saving...';
+        statusSpan.className = 'text-xs text-blue-600';
+
+        fetch("{{ url_for('api_config') }}", {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(configData)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.message) {
+                statusSpan.textContent = 'Saved!';
+                statusSpan.className = 'text-xs text-green-600';
+                // Optionally update UI elements if needed, e.g., refresh server status list
+                fetchServerStatus(); 
+            } else {
+                statusSpan.textContent = `Error: ${data.error || 'Failed to save'}`;
+                statusSpan.className = 'text-xs text-red-600';
+            }
+            setTimeout(() => { statusSpan.textContent = ''; }, 3000); // Clear status after 3s
+        })
+        .catch(error => {
+            console.error('Error saving configuration:', error);
+            statusSpan.textContent = 'Error saving!';
+            statusSpan.className = 'text-xs text-red-600';
+            setTimeout(() => { statusSpan.textContent = ''; }, 3000);
+        });
+    }
+
+    function fetchConfig() {
+        fetch("{{ url_for('api_config') }}")
+            .then(response => response.json())
+            .then(data => {
+                if (data.API_SERVERS && Array.isArray(data.API_SERVERS)) {
+                    configApiServersTextarea.value = data.API_SERVERS.join('\n');
+                }
+                // Populate other config fields if added
+            })
+            .catch(error => {
+                console.error('Error fetching configuration:', error);
+                configApiServersTextarea.value = "Error loading configuration.";
+            });
     }
 
     // --- Job Status Polling ---
@@ -395,6 +481,7 @@
     }
 
     // Initial fetch and periodic refresh
+    fetchConfig(); // Fetch config on load
     fetchJobStatus();
     fetchServerStatus();
     setInterval(fetchJobStatus, 5000); // Refresh jobs every 5 seconds

@@ -20,26 +20,76 @@ log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 # Log file setup will happen after config load
 
 # --- Configuration Loading ---
-def load_config():
-    try:
-        with open('config.json', 'r') as f:
-            config = json.load(f)
-            if not isinstance(config.get('API_SERVERS'), list):
-                raise ValueError("'API_SERVERS' key missing or not a list in config.json")
-            # Add default for logging flag if missing
-            if 'ENABLE_JOB_LOGGING' not in config:
-                 config['ENABLE_JOB_LOGGING'] = True
-            return config
-    except FileNotFoundError:
-        print("ERROR: config.json not found. Please create it based on config.json.example.")
-        exit(1)
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"ERROR: Could not parse config.json: {e}")
-        exit(1)
+CONFIG_FILE = 'config.json'
+CONFIG_EXAMPLE_FILE = 'config.json.example'
+DEFAULT_CONFIG = {
+    'API_SERVERS': ['http://127.0.0.1:8001'], # Default if no files exist
+    'ENABLE_JOB_LOGGING': True
+}
 
-config_data = load_config()
-API_SERVERS = config_data.get('API_SERVERS', []) # Get servers from loaded config
-ENABLE_JOB_LOGGING = config_data.get('ENABLE_JOB_LOGGING', True) # Get logging flag
+def save_config(config_data_to_save):
+    """Saves the configuration data to config.json"""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config_data_to_save, f, indent=4)
+        logger.info(f"Configuration saved to {CONFIG_FILE}")
+    except IOError as e:
+        print(f"ERROR: Could not save config to {CONFIG_FILE}: {e}")
+        logger.error(f"Failed to save config to {CONFIG_FILE}: {e}")
+
+def load_config():
+    """Loads configuration, falling back to example or defaults."""
+    config_to_load = None
+    loaded_from = ""
+
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config_to_load = json.load(f)
+                loaded_from = CONFIG_FILE
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load or parse {CONFIG_FILE}, trying example. Error: {e}")
+            logger.warning(f"Could not load or parse {CONFIG_FILE}, trying example. Error: {e}")
+
+    if config_to_load is None and os.path.exists(CONFIG_EXAMPLE_FILE):
+        try:
+            with open(CONFIG_EXAMPLE_FILE, 'r') as f:
+                config_to_load = json.load(f)
+                loaded_from = CONFIG_EXAMPLE_FILE
+                print(f"Info: Loaded configuration from {CONFIG_EXAMPLE_FILE}. Saving as {CONFIG_FILE}.")
+                logger.info(f"Loaded configuration from {CONFIG_EXAMPLE_FILE}. Saving as {CONFIG_FILE}.")
+                # Save the example content as the actual config file
+                save_config(config_to_load)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load or parse {CONFIG_EXAMPLE_FILE}, using defaults. Error: {e}")
+            logger.warning(f"Could not load or parse {CONFIG_EXAMPLE_FILE}, using defaults. Error: {e}")
+
+    if config_to_load is None:
+        print(f"Warning: No config files found. Using default configuration and creating {CONFIG_FILE}.")
+        logger.warning(f"No config files found. Using default configuration and creating {CONFIG_FILE}.")
+        config_to_load = DEFAULT_CONFIG.copy()
+        loaded_from = "Defaults"
+        save_config(config_to_load) # Create the file with defaults
+
+    # Validate and apply defaults for missing keys
+    if not isinstance(config_to_load.get('API_SERVERS'), list):
+        print(f"Warning: 'API_SERVERS' missing or invalid in {loaded_from}. Using default.")
+        logger.warning(f"'API_SERVERS' missing or invalid in {loaded_from}. Using default.")
+        config_to_load['API_SERVERS'] = DEFAULT_CONFIG['API_SERVERS']
+        
+    if 'ENABLE_JOB_LOGGING' not in config_to_load or not isinstance(config_to_load.get('ENABLE_JOB_LOGGING'), bool):
+         print(f"Warning: 'ENABLE_JOB_LOGGING' missing or invalid in {loaded_from}. Using default ({DEFAULT_CONFIG['ENABLE_JOB_LOGGING']}).")
+         logger.warning(f"'ENABLE_JOB_LOGGING' missing or invalid in {loaded_from}. Using default ({DEFAULT_CONFIG['ENABLE_JOB_LOGGING']}).")
+         config_to_load['ENABLE_JOB_LOGGING'] = DEFAULT_CONFIG['ENABLE_JOB_LOGGING']
+
+    print(f"Configuration loaded from: {loaded_from}")
+    logger.info(f"Configuration loaded from: {loaded_from}")
+    return config_to_load
+
+# Load initial config
+app_config = load_config()
+API_SERVERS = app_config.get('API_SERVERS', []) # Get servers from loaded config
+ENABLE_JOB_LOGGING = app_config.get('ENABLE_JOB_LOGGING', True) # Get logging flag
 
 # Define constants used in options loading *before* load_options
 MAX_DURATION = 120
@@ -205,6 +255,72 @@ def api_save_options():
          if ENABLE_JOB_LOGGING:
              logger.error(f"Error saving options via API: {e}")
          return jsonify({'error': f'Error saving options: {e}'}), 500
+
+
+@app.route('/api/config', methods=['GET', 'POST'])
+def api_config():
+    global app_config, API_SERVERS, server_status
+    if request.method == 'GET':
+        # Return a copy of the config
+        return jsonify(app_config.copy())
+
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON payload'}), 400
+
+            new_api_servers_raw = data.get('API_SERVERS')
+
+            # Validate API_SERVERS
+            if not isinstance(new_api_servers_raw, list):
+                 return jsonify({'error': "'API_SERVERS' must be a list of strings"}), 400
+            
+            new_api_servers = []
+            for server in new_api_servers_raw:
+                if not isinstance(server, str) or not server.strip().startswith(('http://', 'https://')):
+                    return jsonify({'error': f"Invalid server URL format: '{server}'. Must be strings starting with http:// or https://"}), 400
+                new_api_servers.append(server.strip())
+
+            # Update server_status under lock
+            with server_lock:
+                old_server_status = server_status.copy()
+                new_server_status = {}
+                for server in new_api_servers:
+                    if server in old_server_status:
+                        # Preserve status for existing servers
+                        new_server_status[server] = old_server_status[server]
+                        # Ensure 'available' is True if it wasn't (worker manages busy state)
+                        # Let worker manage availability based on jobs and backoff
+                        # new_server_status[server]['available'] = True 
+                    else:
+                        # Initialize new servers
+                        new_server_status[server] = {'available': True, 'fail_count': 0, 'next_retry_time': 0}
+                        logger.info(f"New API server added: {server}")
+                
+                # Log removed servers
+                removed_servers = set(old_server_status.keys()) - set(new_server_status.keys())
+                for server in removed_servers:
+                    logger.info(f"API server removed: {server}")
+
+                # Atomically update the global state
+                server_status = new_server_status
+                API_SERVERS = new_api_servers # Update the list used for worker assignment logic
+                app_config['API_SERVERS'] = new_api_servers # Update the config dict
+
+            # Save the updated configuration to file
+            save_config(app_config)
+
+            logger.info(f"API_SERVERS configuration updated: {new_api_servers}")
+            
+            # Note: Changing the number of workers requires an app restart.
+            # The current workers will now use the updated API_SERVERS list for job assignment.
+            
+            return jsonify({'message': 'Configuration saved successfully', 'config': app_config}), 200
+
+        except Exception as e:
+             logger.error(f"Error saving configuration via API: {e}")
+             return jsonify({'error': f'Error saving configuration: {e}'}), 500
 
 
 @app.route('/generate', methods=['POST'])
