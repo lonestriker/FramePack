@@ -905,7 +905,7 @@ def worker():
 if __name__ == '__main__':
     # Add argument parsing for port
     parser = argparse.ArgumentParser(description="FramePack Web UI")
-    parser.add_argument("--port", type=int, default=5001, help="Port number to run the web server on")
+    parser.add_argument("--port", type=int, default=5000, help="Port number to run the web server on")
     cli_args = parser.parse_args()
 
     # Ensure templates directory exists
