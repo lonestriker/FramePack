@@ -1,23 +1,380 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Image Browser & Video Generator</title>
-    <style>
-        body { font-family: sans-serif; margin: 2em; }
-        .error { color: red; }
-    </style>
-</head>
-<body>
-    <h1>Image Browser & Video Generator</h1>
-    <form method="post">
-        <label for="directory">Enter Directory Path:</label><br>
-        <input type="text" id="directory" name="directory" size="80" required><br><br>
-        <button type="submit">Browse Images</button>
-    </form>
-    {% if error %}
-        <p class="error">Error: {{ error }}</p>
-    {% endif %}
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block title %}FramePack UI{% endblock %}
+
+{% block content %}
+<div class="flex flex-col md:flex-row gap-4">
+
+    <!-- Main Content Area -->
+    <div class="flex-grow">
+        <h1 class="text-3xl font-bold mb-4">FramePack</h1>
+
+        <!-- Error Display -->
+        {% if error %}
+            <div id="error-message" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+                <strong class="font-bold">Error:</strong>
+                <span class="block sm:inline">{{ error }}</span>
+                <button type="button" class="absolute top-0 bottom-0 right-0 px-4 py-3" onclick="document.getElementById('error-message').style.display='none'">
+                    <svg class="fill-current h-6 w-6 text-red-500" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><title>Close</title><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.152a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.152 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
+                </button>
+            </div>
+        {% endif %}
+
+        <!-- Directory Selector (Collapsible Logic via presence of 'directory') -->
+        <div id="directory-selector" class="bg-white p-4 rounded shadow mb-4 {% if directory %}hidden{% endif %}">
+             <h2 class="text-xl font-semibold mb-2">Select Image Directory</h2>
+             <form method="POST" action="{{ url_for('index') }}">
+                 <div class="flex items-center">
+                     <input type="text" name="directory" class="flex-grow border border-gray-300 rounded-l px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="/path/to/your/images">
+                     <button type="submit" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-r">Load Images</button>
+                 </div>
+             </form>
+        </div>
+        
+        <!-- Directory Display (Shown when directory is selected) -->
+        {% if directory %}
+        <div class="bg-gray-200 p-3 rounded shadow mb-4 flex justify-between items-center">
+            <span class="text-gray-700">Current Directory: <code class="bg-gray-300 px-1 rounded">{{ directory }}</code></span>
+            <a href="{{ url_for('index') }}" class="text-sm bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-3 rounded">Change Directory</a>
+        </div>
+        {% endif %}
+
+        <!-- Options Accordion -->
+        <div id="options-accordion" class="bg-white p-4 rounded shadow mb-4">
+            <details class="group">
+                 <summary class="flex justify-between items-center font-medium cursor-pointer list-none">
+                     <span class="text-lg">Options</span>
+                     <span class="transition group-open:rotate-180">
+                         <svg fill="none" height="24" shape-rendering="geometricPrecision" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" viewBox="0 0 24 24" width="24"><path d="M6 9l6 6 6-6"></path></svg>
+                     </span>
+                 </summary>
+                 <div class="text-neutral-600 mt-3 group-open:animate-fadeIn">
+                     <form id="optionsForm" class="space-y-3">
+                         <div>
+                             <label for="opt-prompt" class="block text-sm font-medium text-gray-700">Default Prompt</label>
+                             <textarea id="opt-prompt" name="prompt" rows="2" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">{{ options.prompt }}</textarea>
+                         </div>
+                         <div>
+                             <label for="opt-duration" class="block text-sm font-medium text-gray-700">Default Duration (seconds)</label>
+                             <input type="number" id="opt-duration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                         </div>
+                         <div class="flex items-center">
+                             <input id="opt-use_teacache" name="use_teacache" type="checkbox" {% if options.use_teacache %}checked{% endif %} class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                             <label for="opt-use_teacache" class="ml-2 block text-sm text-gray-900">Use TeaCache (Recommended)</label>
+                         </div>
+                         <div class="flex justify-end items-center space-x-2">
+                             <span id="options-save-status" class="text-sm text-green-600"></span>
+                             <button type="button" onclick="saveOptions()" class="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded text-sm">Save Options</button>
+                         </div>
+                     </form>
+                 </div>
+            </details>
+        </div>
+
+
+        <!-- Image Grid -->
+        {% if images %}
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                {% for image in images %}
+                <div class="bg-white rounded shadow overflow-hidden cursor-pointer hover:shadow-lg transition-shadow duration-200" 
+                     onclick="setupModal('{{ image.path | e }}', '{{ image.name | e }}')">
+                    <img src="{{ url_for('serve_image', filename=image.path) }}" alt="{{ image.name }}" class="w-full h-32 object-cover">
+                    <div class="p-2">
+                        <p class="text-xs text-gray-700 truncate" title="{{ image.name }}">{{ image.name }}</p>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% elif directory %}
+            <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative" role="alert">
+                No images found in the selected directory.
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Sticky Job Status Sidebar -->
+    <div class="w-full md:w-1/4 lg:w-1/5 flex-shrink-0">
+        <div class="sticky-sidebar bg-white p-4 rounded shadow">
+            <h2 class="text-xl font-semibold mb-3 border-b pb-2">Job Status</h2>
+            <div id="job-status-list" class="space-y-3 text-sm">
+                <!-- Job status will be loaded here by JS -->
+                <p class="text-gray-500">Loading job status...</p>
+            </div>
+             <h2 class="text-xl font-semibold mb-3 border-b pb-2 mt-4">Server Status</h2>
+             <div id="server-status-list" class="space-y-2 text-sm">
+                 <!-- Server status will be loaded here by JS -->
+                 <p class="text-gray-500">Loading server status...</p>
+             </div>
+        </div>
+    </div>
+</div>
+
+
+<!-- Generation Modal (Tailwind Styled) -->
+<div id="generationModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center hidden z-50" aria-labelledby="generationModalLabel" role="dialog" aria-modal="true">
+    <div class="relative mx-auto p-5 border w-full max-w-md shadow-lg rounded-md bg-white">
+        <div class="flex justify-between items-center border-b pb-3 mb-3">
+             <h5 class="text-lg font-medium leading-6 text-gray-900" id="generationModalLabel">Generate Video</h5>
+             <button type="button" class="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm p-1.5 ml-auto inline-flex items-center" onclick="closeModal()">
+                 <svg aria-hidden="true" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414z" clip-rule="evenodd"></path></svg>
+                 <span class="sr-only">Close modal</span>
+             </button>
+        </div>
+        <div class="mt-3">
+            <form id="generateForm">
+                <input type="hidden" id="modalImagePath" name="image_path">
+                <div class="mb-3">
+                    <label class="block text-sm font-medium text-gray-700">Image:</label>
+                    <img id="modalImagePreview" src="" alt="Selected Image" class="mt-1 max-h-40 w-auto mx-auto mb-1">
+                    <p id="modalImageName" class="text-center text-xs text-gray-600"></p>
+                </div>
+                <div class="mb-3">
+                    <label for="modalPrompt" class="block text-sm font-medium text-gray-700">Prompt:</label>
+                    <textarea class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" id="modalPrompt" name="prompt" rows="3">{{ options.prompt }}</textarea>
+                </div>
+                <div class="mb-3">
+                    <label for="modalDuration" class="block text-sm font-medium text-gray-700">Duration (seconds):</label>
+                    <input type="number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" id="modalDuration" name="duration" value="{{ options.duration }}" min="1" max="{{ max_duration }}">
+                </div>
+            </form>
+            <div id="modalMessage" class="mt-3 text-sm"></div>
+        </div>
+        <div class="mt-4 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse border-t pt-3">
+            <button type="button" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm" onclick="submitGeneration()">
+                Generate
+            </button>
+            <button type="button" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm" onclick="closeModal()">
+                Cancel
+            </button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const modal = document.getElementById('generationModal');
+    const modalImagePath = document.getElementById('modalImagePath');
+    const modalImagePreview = document.getElementById('modalImagePreview');
+    const modalImageName = document.getElementById('modalImageName');
+    const modalPrompt = document.getElementById('modalPrompt');
+    const modalDuration = document.getElementById('modalDuration');
+    const modalMessage = document.getElementById('modalMessage');
+
+    function setupModal(imagePath, imageName) {
+        modalImagePath.value = imagePath;
+        modalImagePreview.src = "{{ url_for('serve_image', filename='') }}" + imagePath; // Use url_for for base path
+        modalImageName.textContent = imageName;
+        // Reset message and default prompt/duration from current options if needed
+        modalPrompt.value = document.getElementById('opt-prompt').value; // Use current default prompt
+        modalDuration.value = document.getElementById('opt-duration').value; // Use current default duration
+        modalMessage.textContent = '';
+        modalMessage.className = 'mt-3 text-sm';
+        modal.classList.remove('hidden');
+    }
+
+    function closeModal() {
+        modal.classList.add('hidden');
+    }
+
+    function submitGeneration() {
+        const form = document.getElementById('generateForm');
+        const formData = new FormData(form);
+        
+        modalMessage.textContent = 'Submitting job...';
+        modalMessage.className = 'mt-3 text-sm p-2 bg-blue-100 text-blue-700 rounded';
+
+        fetch("{{ url_for('generate') }}", {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.job_id) {
+                modalMessage.textContent = `Job submitted successfully! ID: ${data.job_id}`;
+                modalMessage.className = 'mt-3 text-sm p-2 bg-green-100 text-green-700 rounded';
+                fetchJobStatus(); // Refresh job list immediately
+                // Close modal after a short delay
+                setTimeout(closeModal, 1500);
+            } else {
+                modalMessage.textContent = `Error: ${data.error || 'Unknown error'}`;
+                modalMessage.className = 'mt-3 text-sm p-2 bg-red-100 text-red-700 rounded';
+            }
+        })
+        .catch(error => {
+            console.error('Error submitting generation job:', error);
+            modalMessage.textContent = `Error submitting job: ${error}`;
+            modalMessage.className = 'mt-3 text-sm p-2 bg-red-100 text-red-700 rounded';
+        });
+    }
+
+    function saveOptions() {
+        const optionsForm = document.getElementById('optionsForm');
+        const statusSpan = document.getElementById('options-save-status');
+        const optionsData = {
+            prompt: document.getElementById('opt-prompt').value,
+            duration: parseInt(document.getElementById('opt-duration').value, 10),
+            use_teacache: document.getElementById('opt-use_teacache').checked
+        };
+
+        statusSpan.textContent = 'Saving...';
+        statusSpan.className = 'text-sm text-blue-600';
+
+        fetch("{{ url_for('api_save_options') }}", {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(optionsData)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.message) {
+                statusSpan.textContent = 'Saved!';
+                statusSpan.className = 'text-sm text-green-600';
+                // Update defaults in the modal generation form if needed
+                modalPrompt.value = optionsData.prompt;
+                modalDuration.value = optionsData.duration;
+            } else {
+                statusSpan.textContent = `Error: ${data.error || 'Failed to save'}`;
+                statusSpan.className = 'text-sm text-red-600';
+            }
+            setTimeout(() => { statusSpan.textContent = ''; }, 2000); // Clear status after 2s
+        })
+        .catch(error => {
+            console.error('Error saving options:', error);
+            statusSpan.textContent = 'Error saving!';
+            statusSpan.className = 'text-sm text-red-600';
+            setTimeout(() => { statusSpan.textContent = ''; }, 2000);
+        });
+    }
+
+    // --- Job Status Polling ---
+    const jobStatusList = document.getElementById('job-status-list');
+    const serverStatusList = document.getElementById('server-status-list');
+
+    function getStatusBadge(status) {
+        switch (status) {
+            case 'completed': return '<span class="bg-green-100 text-green-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Completed</span>';
+            case 'running': return '<span class="bg-blue-100 text-blue-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Running</span>';
+            case 'queued': return '<span class="bg-yellow-100 text-yellow-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Queued</span>';
+            case 'failed_will_retry': return '<span class="bg-orange-100 text-orange-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Failed (Retrying)</span>';
+            case 'failed': return '<span class="bg-red-100 text-red-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">Failed</span>'; // Assuming a final failed state might exist
+            default: return `<span class="bg-gray-100 text-gray-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded">${status}</span>`;
+        }
+    }
+
+    function fetchJobStatus() {
+        fetch("{{ url_for('api_jobs') }}")
+            .then(response => response.json())
+            .then(data => {
+                jobStatusList.innerHTML = ''; // Clear current list
+                const jobIds = Object.keys(data).sort((a, b) => {
+                    // Sort by status priority then potentially time if available
+                    const statusOrder = { 'running': 1, 'queued': 2, 'failed_will_retry': 3, 'completed': 4, 'failed': 5 };
+                    const statusA = statusOrder[data[a].status] || 99;
+                    const statusB = statusOrder[data[b].status] || 99;
+                    if (statusA !== statusB) return statusA - statusB;
+                    // Add time-based sorting later if needed
+                    return 0; 
+                });
+
+                if (jobIds.length === 0) {
+                    jobStatusList.innerHTML = '<p class="text-gray-500">No jobs found.</p>';
+                    return;
+                }
+
+                jobIds.forEach(jobId => {
+                    const job = data[jobId];
+                    const jobElement = document.createElement('div');
+                    jobElement.className = 'border-b pb-2';
+                    
+                    let outputFilename = job.output_filename ? `<span class="block text-xs text-gray-500 truncate">Output: ${job.output_filename}</span>` : '';
+                    let promptText = job.params.prompt ? `<span class="block text-xs text-gray-500 truncate" title="${job.params.prompt}">Prompt: ${job.params.prompt}</span>` : '';
+                    let imageText = job.params.image_path ? `<span class="block text-xs text-gray-500 truncate" title="${job.params.image_path}">Image: ${job.params.image_path.split(/[\\/]/).pop()}</span>` : ''; // Show only filename
+
+                    jobElement.innerHTML = `
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="font-semibold truncate" title="${jobId}">${jobId.substring(0, 8)}...</span>
+                            ${getStatusBadge(job.status)}
+                        </div>
+                        ${imageText}
+                        ${promptText}
+                        ${outputFilename}
+                        ${job.status === 'running' && job.output.length > 0 ? `<p class="text-xs text-gray-600 mt-1 truncate">Log: ${job.output[job.output.length - 1]}</p>` : ''}
+                        ${job.status === 'failed_will_retry' && job.output.length > 0 ? `<p class="text-xs text-orange-600 mt-1 truncate">Error: ${job.output[job.output.length - 1]}</p>` : ''}
+                    `;
+                    jobStatusList.appendChild(jobElement);
+                });
+            })
+            .catch(error => {
+                console.error('Error fetching job status:', error);
+                jobStatusList.innerHTML = '<p class="text-red-500">Error loading job status.</p>';
+            });
+    }
+    
+    function fetchServerStatus() {
+        fetch("{{ url_for('api_server_status') }}")
+            .then(response => response.json())
+            .then(data => {
+                serverStatusList.innerHTML = ''; // Clear current list
+                const serverUrls = Object.keys(data).sort();
+
+                if (serverUrls.length === 0) {
+                    serverStatusList.innerHTML = '<p class="text-gray-500">No API servers configured.</p>';
+                    return;
+                }
+
+                serverUrls.forEach(serverUrl => {
+                    const status = data[serverUrl];
+                    const serverElement = document.createElement('div');
+                    serverElement.className = 'border-b pb-1';
+
+                    let statusText = '';
+                    let statusColor = 'text-gray-500';
+                    let availabilityText = '';
+
+                    if (status.available && status.next_retry_time <= Date.now() / 1000) {
+                        statusText = 'Available';
+                        statusColor = 'text-green-600';
+                    } else if (!status.available) {
+                        statusText = 'Busy';
+                        statusColor = 'text-blue-600';
+                    } else { // Available but in backoff
+                        statusText = 'Backoff';
+                        statusColor = 'text-orange-600';
+                        availabilityText = ` (retry in ${Math.round(status.next_retry_available_in_seconds)}s)`;
+                    }
+
+                    serverElement.innerHTML = `
+                        <div class="flex justify-between items-center">
+                             <span class="font-medium text-xs truncate" title="${serverUrl}">${serverUrl}</span>
+                             <span class="${statusColor} font-semibold">${statusText}${availabilityText}</span>
+                        </div>
+                        <div class="text-xs text-gray-500">Fails: ${status.fail_count}</div>
+                    `;
+                    serverStatusList.appendChild(serverElement);
+                });
+            })
+            .catch(error => {
+                console.error('Error fetching server status:', error);
+                serverStatusList.innerHTML = '<p class="text-red-500">Error loading server status.</p>';
+            });
+    }
+
+    // Initial fetch and periodic refresh
+    fetchJobStatus();
+    fetchServerStatus();
+    setInterval(fetchJobStatus, 5000); // Refresh jobs every 5 seconds
+    setInterval(fetchServerStatus, 10000); // Refresh servers every 10 seconds
+
+    // Close modal on escape key
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') {
+            closeModal();
+        }
+    });
+
+</script>
+{% endblock %}

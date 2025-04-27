@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, url_for, send_file, jsonify, redirect, flash
+from flask import Flask, render_template, request, url_for, send_file, jsonify, redirect, flash, session
 import os
 import threading
 import queue
@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24) # Needed for flashing messages
+app.secret_key = os.urandom(24) # Needed for flashing messages and session
 
 # --- Logging Setup --- 
 logger = logging.getLogger('framepack')
@@ -53,17 +53,19 @@ def load_options():
         if os.path.exists(OPTIONS_FILE):
             with open(OPTIONS_FILE, 'r') as f:
                 loaded = json.load(f)
-                # Validate and merge with defaults
                 options = DEFAULT_OPTIONS.copy()
-                options.update({k: loaded[k] for k in DEFAULT_OPTIONS if k in loaded})
-                # Ensure duration is within bounds
-                options['duration'] = max(1, min(MAX_DURATION, int(options.get('duration', DEFAULT_DURATION))))
-                # Ensure teacache is boolean
-                options['use_teacache'] = bool(options.get('use_teacache', True))
+                # Safely update options
+                options['prompt'] = str(loaded.get('prompt', DEFAULT_OPTIONS['prompt']))
+                try:
+                    duration_val = int(loaded.get('duration', DEFAULT_OPTIONS['duration']))
+                    options['duration'] = max(1, min(MAX_DURATION, duration_val))
+                except (ValueError, TypeError):
+                    options['duration'] = DEFAULT_OPTIONS['duration'] # Fallback on conversion error
+                options['use_teacache'] = bool(loaded.get('use_teacache', DEFAULT_OPTIONS['use_teacache']))
                 return options
         else:
             return DEFAULT_OPTIONS.copy()
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
+    except (json.JSONDecodeError, IOError) as e: # Catch IO errors too
         print(f"Warning: Could not load or parse {OPTIONS_FILE}, using defaults. Error: {e}")
         return DEFAULT_OPTIONS.copy()
 
@@ -116,83 +118,98 @@ server_lock = threading.Lock() # Keep the lock
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    if request.method == 'POST':
-        directory = request.form.get('directory')
-        if directory and os.path.isdir(directory):
-            return redirect(url_for('view_dir', directory=directory)) # Correctly use redirect()
-        else:
-            # Handle invalid directory path
-            return render_template('index.html', error="Invalid directory path")
-    return render_template('index.html')
-
-@app.route('/view_dir')
-def view_dir():
-    directory = request.args.get('directory')
-    if not directory or not os.path.isdir(directory):
-        # Redirecting to index if directory is invalid
-        return redirect(url_for('index'))
-
+    global app_options # Allow modification if needed (though saved via API now)
+    directory = request.args.get('directory', None) # Get directory from query param
     images = []
     error_message = None
-    try:
-        for fname in os.listdir(directory):
-            if os.path.splitext(fname)[1].lower() in IMAGE_EXTENSIONS:
-                 images.append({'name': fname, 'path': os.path.join(directory, fname)})
-    except OSError as e:
-        error_message = f"Error accessing directory: {e}" # Store error message
 
-    # Pass durations to the template for the modal
-    return render_template('view_dir.html', 
+    if request.method == 'POST':
+        # Handle directory submission
+        submitted_dir = request.form.get('directory')
+        if submitted_dir and os.path.isdir(submitted_dir):
+            # Valid directory submitted, redirect to GET with query parameter
+            return redirect(url_for('index', directory=submitted_dir))
+        else:
+            # Invalid directory submitted
+            error_message = "Invalid or missing directory path."
+            # Render the template again, showing the error and the form
+            return render_template('index.html', 
+                                   directory=None, 
+                                   images=[], 
+                                   error=error_message, 
+                                   options=app_options, 
+                                   max_duration=MAX_DURATION)
+
+    # Handle GET request (or after redirect from POST)
+    if directory:
+        if os.path.isdir(directory):
+            try:
+                for fname in sorted(os.listdir(directory)): # Sort filenames
+                    if os.path.splitext(fname)[1].lower() in IMAGE_EXTENSIONS:
+                        images.append({'name': fname, 'path': os.path.join(directory, fname)})
+            except OSError as e:
+                error_message = f"Error accessing directory: {e}"
+                directory = None # Reset directory if error accessing
+        else:
+            error_message = "Specified directory not found."
+            directory = None # Reset directory if invalid
+
+    # Always render index.html, passing current state
+    return render_template('index.html', 
                            directory=directory, 
                            images=images, 
                            error=error_message, 
-                           max_duration=MAX_DURATION, 
-                           default_duration=app_options['duration'], # Use loaded default duration
-                           default_prompt=app_options['prompt']) # Pass default prompt
+                           options=app_options, 
+                           max_duration=MAX_DURATION)
 
-@app.route('/options', methods=['GET', 'POST'])
-def options_page():
+# Remove /view_dir route - functionality merged into '/'
+# Remove /options route - replaced by API and integrated into index.html
+
+# --- API Routes ---
+
+@app.route('/api/options', methods=['POST'])
+def api_save_options():
     global app_options
-    if request.method == 'POST':
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
+
+        new_prompt = str(data.get('prompt', app_options['prompt']))
+        new_use_teacache = bool(data.get('use_teacache', app_options['use_teacache']))
+        
         try:
-            new_prompt = request.form.get('prompt', '')
-            new_duration = request.form.get('duration', DEFAULT_OPTIONS['duration'], type=int)
-            # Checkbox value is 'on' if checked, None otherwise
-            new_use_teacache = request.form.get('use_teacache') == 'on' 
-
-            # Validate duration
+            new_duration = int(data.get('duration', app_options['duration']))
             if not 1 <= new_duration <= MAX_DURATION:
-                flash(f'Invalid duration. Must be between 1 and {MAX_DURATION}. Using default.', 'warning')
-                new_duration = DEFAULT_OPTIONS['duration']
+                 new_duration = app_options['duration'] # Keep old if invalid
+                 # Optionally return a warning in the response
+        except (ValueError, TypeError):
+            new_duration = app_options['duration'] # Keep old on error
 
-            app_options['prompt'] = new_prompt
-            app_options['duration'] = new_duration
-            app_options['use_teacache'] = new_use_teacache
-            
-            save_options(app_options)
-            flash('Options saved successfully!', 'success')
-            if ENABLE_JOB_LOGGING:
-                logger.info(f"Options updated: Prompt='{new_prompt}', Duration={new_duration}, UseTeaCache={new_use_teacache}")
+        app_options['prompt'] = new_prompt
+        app_options['duration'] = new_duration
+        app_options['use_teacache'] = new_use_teacache
+        
+        save_options(app_options)
+        
+        if ENABLE_JOB_LOGGING:
+            logger.info(f"Options updated via API: Prompt='{new_prompt}', Duration={new_duration}, UseTeaCache={new_use_teacache}")
+        
+        return jsonify({'message': 'Options saved successfully', 'options': app_options}), 200
 
-        except Exception as e:
-             flash(f'Error saving options: {e}', 'error')
-             if ENABLE_JOB_LOGGING:
-                 logger.error(f"Error saving options via web UI: {e}")
+    except Exception as e:
+         if ENABLE_JOB_LOGGING:
+             logger.error(f"Error saving options via API: {e}")
+         return jsonify({'error': f'Error saving options: {e}'}), 500
 
-        return redirect(url_for('options_page')) # Redirect to refresh page after POST
-
-    # GET request
-    return render_template('options.html', options=app_options, max_duration=MAX_DURATION)
 
 @app.route('/generate', methods=['POST'])
 def generate():
+    # This route remains largely the same, using app_options as defaults
     global app_options
     image_path = request.form.get('image_path')
-    # Use submitted prompt, fallback to saved default, fallback to empty string
     prompt = request.form.get('prompt', app_options['prompt']).strip() 
-    # Use submitted duration, fallback to saved default
     duration = request.form.get('duration', app_options['duration'], type=int) 
-    # Use the globally configured teacache setting for this job
     use_teacache_for_job = app_options['use_teacache']
 
     if not image_path or not os.path.isfile(image_path):
@@ -214,10 +231,9 @@ def generate():
 
     if ENABLE_JOB_LOGGING:
         filename = os.path.basename(image_path)
-        # Log the effective parameters used for the job
         logger.info(f"Job Submitted - ID: {job_id}, Image: {filename}, Prompt: '{params['prompt']}', Duration: {params['duration']}s, UseTeaCache: {params['use_teacache']}")
 
-    return jsonify({'job_id': job_id, 'status': 'queued'}), 202 # 202 Accepted
+    return jsonify({'job_id': job_id, 'status': 'queued'}), 202
 
 # --- New API Route for Job Status ---
 @app.route('/api/jobs')
