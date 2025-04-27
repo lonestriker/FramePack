@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 import argparse # Import argparse
 import atexit # For saving queue on exit
+import requests # Import requests for sending cancel signal
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24) # Needed for flashing messages and session
@@ -440,29 +441,54 @@ def cancel_job(job_id):
     if job_id not in job_status:
         return jsonify({'error': 'Job not found'}), 404
 
-    current_status = job_status[job_id].get('status')
+    job_info = job_status[job_id]
+    current_status = job_info.get('status')
     
     if current_status in ['completed', 'failed', 'cancelled', 'cancelling']:
          return jsonify({'message': f'Job already in final or cancelling state: {current_status}'}), 400
 
     if current_status in ['queued', 'failed_will_retry']:
-        job_status[job_id]['status'] = 'cancelled'
-        job_status[job_id]['cancelled'] = True # Set the flag
-        job_status[job_id]['output'].append("Job cancelled by user before execution.")
+        job_info['status'] = 'cancelled'
+        job_info['cancelled'] = True # Set the flag
+        job_info['output'].append("Job cancelled by user before execution.")
         logger.info(f"Job Cancelled (Queued) - ID: {job_id}")
         save_queue_state() # Save state after cancelling queued job
         return jsonify({'message': 'Job cancelled successfully'}), 200
         
     elif current_status == 'running':
-        job_status[job_id]['status'] = 'cancelling' # Mark as cancelling
-        job_status[job_id]['cancelled'] = True # Set the flag for the worker to potentially see (best effort)
-        job_status[job_id]['output'].append("Cancellation requested by user...")
+        job_info['status'] = 'cancelling' # Mark as cancelling
+        job_info['cancelled'] = True # Set the flag for the worker to potentially see (best effort)
+        job_info['output'].append("Cancellation requested by user...")
         logger.info(f"Job Cancellation Requested (Running) - ID: {job_id}")
-        # Note: This doesn't actively kill the subprocess in the current worker design.
-        # It relies on the UI showing 'cancelling' and potentially the backend job
-        # itself stopping if it implements cancellation checks.
+        
+        # --- Send cancel signal to the assigned API server ---
+        assigned_server = job_info.get('assigned_server')
+        if assigned_server:
+            cancel_url = f"{assigned_server}/cancel-current"
+            logger.info(f"Sending cancel signal to {cancel_url} for job {job_id}")
+            try:
+                # Send request in a separate thread to avoid blocking Flask? Or use async client?
+                # For simplicity, using a blocking request with a short timeout for now.
+                # Consider using httpx or similar for async requests if this becomes a bottleneck.
+                response = requests.post(cancel_url, timeout=5) # 5 second timeout
+                if response.status_code == 200:
+                    logger.info(f"Successfully sent cancel signal to {assigned_server} for job {job_id}. Server response: {response.text}")
+                    job_info['output'].append("Cancel signal sent to processing server.")
+                elif response.status_code == 404:
+                     logger.warning(f"Cancel signal sent, but server {assigned_server} reported no active job (maybe finished?). Job: {job_id}")
+                     job_info['output'].append("Cancel signal sent, server reported no active job.")
+                else:
+                    logger.error(f"Failed to send cancel signal to {assigned_server} for job {job_id}. Status code: {response.status_code}, Response: {response.text}")
+                    job_info['output'].append(f"Error sending cancel signal to server (HTTP {response.status_code}).")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error sending cancel signal to {assigned_server} for job {job_id}: {e}")
+                job_info['output'].append(f"Error communicating with server to send cancel signal: {e}")
+        else:
+            logger.warning(f"Cannot send cancel signal for job {job_id}: Assigned server not found in job status.")
+            job_info['output'].append("Could not determine server to send cancel signal.")
+            
         # Note: save_queue_state will be called by the worker when it finishes/fails/cancels
-        return jsonify({'message': 'Cancellation requested. Job marked as cancelling.'}), 200
+        return jsonify({'message': 'Cancellation requested. Signal sent to processing server (best effort).'}), 200
     else:
         # Should not happen based on initial check, but good practice
         return jsonify({'error': f'Cannot cancel job in state: {current_status}'}), 400
