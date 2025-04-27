@@ -12,19 +12,27 @@ import base64
 
 def parse_args():
     parser = argparse.ArgumentParser(description="FramePack API Client")
-    parser.add_argument("--api_url", type=str, default="http://127.0.0.1:8001", help="API URL")
-    parser.add_argument("--url", type=str, required=False, help="URL to image")
-    parser.add_argument("--image", type=str, required=False, help="Path to input image")
-    parser.add_argument("--prompt", type=str, required=True, help="Text prompt for generation")
-    parser.add_argument("--seed", type=int, default=31337, help="Random seed")
-    parser.add_argument("--length", type=float, default=5.0, help="Video length in seconds")
-    parser.add_argument("--crf", type=int, default=16, help="MP4 compression (lower = better quality)")
-    parser.add_argument("--gpu-memory", type=float, default=6.0, help="GPU memory preservation in GB")
-    parser.add_argument("--output-dir", type=str, default="./downloads", help="Directory to save the result")
-    parser.add_argument("--poll-interval", type=float, default=5.0, help="Status polling interval in seconds")
-    parser.add_argument("--sync", action="store_true", help="Use synchronous API endpoint (/generate-wait)")
-    parser.add_argument("--no-teacache", action="store_true", default=False,
+    
+    # Group for generation parameters
+    gen_group = parser.add_argument_group('Generation Options')
+    gen_group.add_argument("--api_url", type=str, default="http://127.0.0.1:8001", help="API URL")
+    gen_group.add_argument("--url", type=str, required=False, help="URL to image")
+    gen_group.add_argument("--image", type=str, required=False, help="Path to input image")
+    gen_group.add_argument("--prompt", type=str, help="Text prompt for generation")
+    gen_group.add_argument("--seed", type=int, default=31337, help="Random seed")
+    gen_group.add_argument("--length", type=float, default=5.0, help="Video length in seconds")
+    gen_group.add_argument("--crf", type=int, default=16, help="MP4 compression (lower = better quality)")
+    gen_group.add_argument("--gpu-memory", type=float, default=6.0, help="GPU memory preservation in GB")
+    gen_group.add_argument("--output-dir", type=str, default="./downloads", help="Directory to save the result")
+    gen_group.add_argument("--poll-interval", type=float, default=5.0, help="Status polling interval in seconds")
+    gen_group.add_argument("--sync", action="store_true", help="Use synchronous API endpoint (/generate-wait)")
+    gen_group.add_argument("--no-teacache", action="store_true", default=False,
                         help="Disable TeaCache (slower generation but may improve hand/finger quality)")
+
+    # Group for cancellation
+    cancel_group = parser.add_argument_group('Cancellation Option')
+    cancel_group.add_argument("--cancel", type=str, metavar="JOB_ID", help="Cancel a running job by its ID")
+
     return parser.parse_args()
 
 
@@ -184,9 +192,36 @@ def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, 
         sys.exit(1)
 
 
+def cancel_job(api_url, job_id):
+    """Send a cancellation request to the API"""
+    try:
+        print(f"Sending cancellation request for job ID: {job_id} to {api_url}/cancel/{job_id}")
+        response = requests.post(f"{api_url}/cancel/{job_id}", timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"Cancellation request sent successfully. Server response: Status={result.get('status', 'N/A')}, Message='{result.get('message', 'N/A')}'")
+            return True
+        elif response.status_code == 404:
+            print(f"Error: Job ID '{job_id}' not found on the server.")
+            return False
+        elif response.status_code == 400:
+             print(f"Error: Job '{job_id}' could not be cancelled (likely already completed, failed, or cancelled).")
+             print(response.text)
+             return False
+        else:
+            print(f"Error: API returned status code {response.status_code} during cancellation.")
+            print(response.text)
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending cancellation request: {str(e)}")
+        return False
+
+
 def poll_job_status(api_url, job_id, poll_interval):
-    """Poll the job status until completion or failure"""
-    print(f"Polling job status every {poll_interval} seconds...")
+    """Poll the job status until completion or failure, allowing cancellation."""
+    print(f"Polling job status every {poll_interval} seconds... Press Ctrl+C to attempt cancellation.")
     
     progress_bar = tqdm(total=100, desc="Processing", unit="%")
     last_progress = 0
@@ -221,15 +256,37 @@ def poll_job_status(api_url, job_id, poll_interval):
             if status_data['status'] == 'completed':
                 progress_bar.close()
                 return status_data['video_url']
-            elif status_data['status'] == 'failed':
+            elif status_data['status'] in ['failed', 'cancelled']: # Handle cancelled state
                 progress_bar.close()
-                print(f"Job failed: {status_data['message']}")
-                sys.exit(1)
-                
+                print(f"Job finished with status: {status_data['status']}")
+                if status_data['message']:
+                     print(f"Message: {status_data['message']}")
+                # If cancelled, we don't treat it as a script failure unless cancellation itself failed
+                if status_data['status'] == 'failed':
+                     sys.exit(1) 
+                else:
+                     return None # Indicate cancellation
+
         except requests.exceptions.RequestException as e:
             print(f"Error polling status (will retry): {str(e)}")
-            
-        time.sleep(poll_interval)
+        
+        # Wait interval, but allow interruption for cancellation
+        try:
+            time.sleep(poll_interval)
+        except KeyboardInterrupt:
+            print("\nKeyboardInterrupt received.")
+            try:
+                confirm = input(f"Do you want to attempt to cancel job {job_id}? (y/N): ").lower()
+                if confirm == 'y':
+                    if cancel_job(api_url, job_id):
+                        print("Cancellation requested. Exiting polling.")
+                        return None # Indicate cancellation attempt
+                    else:
+                        print("Failed to send cancellation request. Continuing polling...")
+                else:
+                    print("Cancellation aborted. Continuing polling...")
+            except EOFError: # Handle cases where input stream is closed (e.g., piping)
+                 print("\nInput stream closed, cannot confirm cancellation. Continuing polling...")
 
 
 def download_result(api_url, video_url, output_dir):
@@ -299,15 +356,33 @@ def save_base64_video(base64_data, output_dir, seed, prompt):
 
 def main():
     args = parse_args()
+
+    # Handle cancellation request first
+    if args.cancel:
+        if any([args.image, args.url, args.prompt, args.sync]):
+             print("Error: --cancel cannot be used with generation options (--image, --url, --prompt, --sync, etc.).")
+             sys.exit(1)
+        if not args.api_url:
+             print("Error: --api_url is required for cancellation.")
+             sys.exit(1)
+             
+        if cancel_job(args.api_url, args.cancel):
+             sys.exit(0) # Success
+        else:
+             sys.exit(1) # Failure
+
+    # --- Proceed with generation if not cancelling ---
     
     # Convert no-teacache flag to use_teacache boolean
     use_teacache = not args.no_teacache
     
-    # Validate that either image file or URL is provided
+    # Validate generation arguments
+    if not args.prompt:
+         print("Error: --prompt is required for generation.")
+         sys.exit(1)
     if not args.image and not args.url:
-        print("Error: Either --image or --url must be provided")
+        print("Error: Either --image or --url must be provided for generation.")
         sys.exit(1)
-    
     if args.image and args.url:
         print("Error: Cannot provide both --image and --url. Choose one.")
         sys.exit(1)
@@ -318,6 +393,9 @@ def main():
     
     # Handle the sync mode
     if args.sync:
+        print("--- Synchronous Mode ---")
+        print("Note: Pressing Ctrl+C will only stop this client.")
+        print(f"To cancel the server-side job, run separately: python {sys.argv[0]} --api_url {args.api_url} --cancel JOB_ID")
         # Use the synchronous API endpoint
         response_data = submit_generation_job_sync(
             args.api_url,
@@ -352,6 +430,7 @@ def main():
             
     else:
         # Use the asynchronous API endpoint (original behavior)
+        print("--- Asynchronous Mode ---")
         job_id = submit_generation_job(
             args.api_url,
             args.url,
@@ -367,14 +446,17 @@ def main():
         # Poll for status
         video_url = poll_job_status(args.api_url, job_id, args.poll_interval)
         
-        # Download the result
+        # Download the result if not cancelled
         if video_url:
             output_path = download_result(args.api_url, video_url, args.output_dir)
             print("\nGeneration completed successfully!")
             print(f"Video file: {output_path}")
             if output_path:
                 print(f"OUTPUT_FILE_PATH::{output_path}")
-            
+        elif video_url is None: # Indicates cancellation occurred during polling
+             print("\nJob was cancelled.")
+             sys.exit(0) # Exit gracefully after cancellation
+        # If poll_job_status exited due to failure, sys.exit(1) was already called
 
 
 if __name__ == "__main__":
@@ -384,5 +466,14 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nOperation canceled by user")
+        # Catch final KeyboardInterrupt if it happens outside the polling loop's specific handler
+        print("\nOperation interrupted by user.")
         sys.exit(0)
+    except SystemExit as e:
+         # Allow sys.exit calls to propagate naturally
+         sys.exit(e.code)
+    except Exception as e:
+         print(f"\nAn unexpected error occurred: {e}")
+         import traceback
+         traceback.print_exc()
+         sys.exit(1)

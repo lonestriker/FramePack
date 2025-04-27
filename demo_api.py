@@ -39,6 +39,10 @@ from diffusers_helper.bucket_tools import find_nearest_bucket
 import base64
 import asyncio
 
+# Custom exception for cancellation
+class JobCancelledError(Exception):
+    pass
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--server", type=str, default='0.0.0.0')
 parser.add_argument("--port", type=int, default=8001)
@@ -136,220 +140,37 @@ class JobStatus(BaseModel):
 
 @torch.no_grad()
 def generate_video(job_id: str, input_image_array, request: GenerationRequest):
-    # Set default parameters
-    prompt = request.prompt
-    n_prompt = ""
-    seed = request.seed
-    total_second_length = request.total_second_length
-    latent_window_size = 9
-    steps = 25
-    cfg = 1.0
-    gs = 10.0
-    rs = 0.0
-    gpu_memory_preservation = request.gpu_memory_preservation
-    use_teacache = request.use_teacache
-    mp4_crf = request.mp4_crf
-    save_intermediates = request.save_intermediates
+    # This function is now just a wrapper to call the sync version in an executor
+    # The actual logic is in generate_video_sync
+    # We keep this structure for compatibility with the background task approach
+    # but the core work happens synchronously within the executor thread.
     
-    # Update job status
-    jobs[job_id]["status"] = "processing"
-    jobs[job_id]["progress"] = 0
-    jobs[job_id]["message"] = "Starting..."
-    
-    total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
-    total_latent_sections = int(max(round(total_latent_sections), 1))
+    # Check for cancellation immediately (though unlikely to be set yet)
+    if jobs[job_id]["cancel_event"].is_set():
+        jobs[job_id]["status"] = "cancelled"
+        jobs[job_id]["message"] = "Job cancelled before starting."
+        jobs[job_id]["complete_event"].set() # Signal completion (as cancelled)
+        return
 
     try:
-        # Clean GPU
-        if not high_vram:
-            unload_complete_models(
-                text_encoder, text_encoder_2, image_encoder, vae, transformer
-            )
-
-        # Text encoding
-        jobs[job_id]["message"] = "Text encoding..."
-        
-        if not high_vram:
-            fake_diffusers_current_device(text_encoder, gpu)
-            load_model_as_complete(text_encoder_2, target_device=gpu)
-
-        llama_vec, clip_l_pooler = encode_prompt_conds(prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
-
-        if cfg == 1:
-            llama_vec_n, clip_l_pooler_n = torch.zeros_like(llama_vec), torch.zeros_like(clip_l_pooler)
-        else:
-            llama_vec_n, clip_l_pooler_n = encode_prompt_conds(n_prompt, text_encoder, text_encoder_2, tokenizer, tokenizer_2)
-
-        llama_vec, llama_attention_mask = crop_or_pad_yield_mask(llama_vec, length=512)
-        llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
-
-        # Processing input image
-        jobs[job_id]["message"] = "Image processing..."
-
-        H, W, C = input_image_array.shape
-        height, width = find_nearest_bucket(H, W, resolution=640)
-        input_image_np = resize_and_center_crop(input_image_array, target_width=width, target_height=height)
-
-        Image.fromarray(input_image_np).save(os.path.join(outputs_folder, f'{job_id}.png'))
-
-        input_image_pt = torch.from_numpy(input_image_np).float() / 127.5 - 1
-        input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
-
-        # VAE encoding
-        jobs[job_id]["message"] = "VAE encoding..."
-
-        if not high_vram:
-            load_model_as_complete(vae, target_device=gpu)
-
-        start_latent = vae_encode(input_image_pt, vae)
-
-        # CLIP Vision
-        jobs[job_id]["message"] = "CLIP Vision encoding..."
-
-        if not high_vram:
-            load_model_as_complete(image_encoder, target_device=gpu)
-
-        image_encoder_output = hf_clip_vision_encode(input_image_np, feature_extractor, image_encoder)
-        image_encoder_last_hidden_state = image_encoder_output.last_hidden_state
-
-        # Dtype
-        llama_vec = llama_vec.to(transformer.dtype)
-        llama_vec_n = llama_vec_n.to(transformer.dtype)
-        clip_l_pooler = clip_l_pooler.to(transformer.dtype)
-        clip_l_pooler_n = clip_l_pooler_n.to(transformer.dtype)
-        image_encoder_last_hidden_state = image_encoder_last_hidden_state.to(transformer.dtype)
-
-        # Sampling
-        jobs[job_id]["message"] = "Start sampling..."
-
-        rnd = torch.Generator("cpu").manual_seed(seed)
-        num_frames = latent_window_size * 4 - 3
-
-        history_latents = torch.zeros(size=(1, 16, 1 + 2 + 16, height // 8, width // 8), dtype=torch.float32).cpu()
-        history_pixels = None
-        total_generated_latent_frames = 0
-
-        latent_paddings = reversed(range(total_latent_sections))
-
-        if total_latent_sections > 4:
-            # In theory the latent_paddings should follow the above sequence, but it seems that duplicating some
-            # items looks better than expanding it when total_latent_sections > 4
-            latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
-
-        for latent_padding in latent_paddings:
-            is_last_section = latent_padding == 0
-            latent_padding_size = latent_padding * latent_window_size
-
-            print(f'latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}')
-
-            indices = torch.arange(0, sum([1, latent_padding_size, latent_window_size, 1, 2, 16])).unsqueeze(0)
-            clean_latent_indices_pre, blank_indices, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = indices.split([1, latent_padding_size, latent_window_size, 1, 2, 16], dim=1)
-            clean_latent_indices = torch.cat([clean_latent_indices_pre, clean_latent_indices_post], dim=1)
-
-            clean_latents_pre = start_latent.to(history_latents)
-            clean_latents_post, clean_latents_2x, clean_latents_4x = history_latents[:, :, :1 + 2 + 16, :, :].split([1, 2, 16], dim=2)
-            clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
-
-            if not high_vram:
-                unload_complete_models()
-                move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
-
-            if use_teacache:
-                transformer.initialize_teacache(enable_teacache=True, num_steps=steps)
-            else:
-                transformer.initialize_teacache(enable_teacache=False)
-
-            def callback(d):
-                current_step = d['i'] + 1
-                percentage = int(100.0 * current_step / steps)
-                jobs[job_id]["progress"] = percentage
-                jobs[job_id]["message"] = f'Sampling {current_step}/{steps}. Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30):.2f} seconds (FPS-30).'
-                return
-
-            generated_latents = sample_hunyuan(
-                transformer=transformer,
-                sampler='unipc',
-                width=width,
-                height=height,
-                frames=num_frames,
-                real_guidance_scale=cfg,
-                distilled_guidance_scale=gs,
-                guidance_rescale=rs,
-                num_inference_steps=steps,
-                generator=rnd,
-                prompt_embeds=llama_vec,
-                prompt_embeds_mask=llama_attention_mask,
-                prompt_poolers=clip_l_pooler,
-                negative_prompt_embeds=llama_vec_n,
-                negative_prompt_embeds_mask=llama_attention_mask_n,
-                negative_prompt_poolers=clip_l_pooler_n,
-                device=gpu,
-                dtype=torch.bfloat16,
-                image_embeddings=image_encoder_last_hidden_state,
-                latent_indices=latent_indices,
-                clean_latents=clean_latents,
-                clean_latent_indices=clean_latent_indices,
-                clean_latents_2x=clean_latents_2x,
-                clean_latent_2x_indices=clean_latent_2x_indices,
-                clean_latents_4x=clean_latents_4x,
-                clean_latent_4x_indices=clean_latent_4x_indices,
-                callback=callback,
-            )
-
-            if is_last_section:
-                generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
-
-            total_generated_latent_frames += int(generated_latents.shape[2])
-            history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
-
-            if not high_vram:
-                offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
-                load_model_as_complete(vae, target_device=gpu)
-
-            real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
-
-            if history_pixels is None:
-                history_pixels = vae_decode(real_history_latents, vae).cpu()
-            else:
-                section_latent_frames = (latent_window_size * 2 + 1) if is_last_section else (latent_window_size * 2)
-                overlapped_frames = latent_window_size * 4 - 3
-
-                current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
-                history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
-
-            if not high_vram:
-                unload_complete_models()
-
-            output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
-            
-            # Only save intermediate video files if requested
-            if save_intermediates or is_last_section:
-                save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
-                print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
-                jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
-            
-            if is_last_section:
-                # If we're not saving intermediates, make sure we save the final result
-                if not save_intermediates:
-                    save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
-                    print(f'Decoded final result. Shape {history_pixels.shape}')
-                    jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
-                break
-
-        # Final update when complete
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["progress"] = 100
-        jobs[job_id]["message"] = f"Video generation completed. Length: {max(0, (total_generated_latent_frames * 4 - 3) / 30):.2f} seconds"
-        
+        generate_video_sync(job_id, input_image_array, request)
+    except JobCancelledError:
+        # Status is set within generate_video_sync's finally block
+        print(f"Job {job_id} caught JobCancelledError in wrapper.")
+        pass # Status already set
     except Exception as e:
         traceback.print_exc()
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["message"] = f"Error: {str(e)}"
+        if jobs[job_id]["status"] not in ["completed", "cancelled"]: # Avoid overwriting final status
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["message"] = f"Error: {str(e)}"
         
         if not high_vram:
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
+    finally:
+        # Ensure the completion event is always set
+        jobs[job_id]["complete_event"].set()
 
 @app.post("/generate", response_model=JobStatus)
 async def generate_endpoint(
@@ -457,7 +278,8 @@ async def generate_endpoint(
         "progress": 0,
         "message": "Job queued, waiting to start",
         "video_url": None,
-        "complete_event": asyncio.Event()  # Add this for all jobs
+        "complete_event": asyncio.Event(),
+        "cancel_event": asyncio.Event() # Add cancellation event
     }
     
     # Start the generation process in the background
@@ -477,6 +299,25 @@ async def get_result(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path)
+
+@app.post("/cancel/{job_id}", status_code=200)
+async def cancel_job_endpoint(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if jobs[job_id]["status"] in ["completed", "failed", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Job is already in final state: {jobs[job_id]['status']}")
+
+    print(f"Received cancellation request for job {job_id}")
+    jobs[job_id]["cancel_event"].set()
+    jobs[job_id]["status"] = "cancelling"
+    jobs[job_id]["message"] = "Cancellation request received, attempting to stop..."
+    
+    # Optionally wait a short time for the job to potentially update its status
+    await asyncio.sleep(1) 
+    
+    # Return current status, which might be 'cancelling' or 'cancelled'
+    return {"job_id": job_id, "status": jobs[job_id]["status"], "message": jobs[job_id]["message"]}
 
 @app.get("/health")
 async def health_check():
@@ -593,7 +434,8 @@ async def generate_wait_endpoint(
         "message": "Job queued, waiting to start",
         "video_url": None,
         "video_data": None,  # We'll store the video data here
-        "complete_event": asyncio.Event()  # Event to signal completion
+        "complete_event": asyncio.Event(),  # Event to signal completion
+        "cancel_event": asyncio.Event() # Add cancellation event
     }
     
     # Process generation synchronously (not in background)
@@ -602,6 +444,9 @@ async def generate_wait_endpoint(
     # Wait for completion (should already be complete, but just in case)
     await jobs[job_id]["complete_event"].wait()
     
+    # Check for cancellation or failure after waiting
+    if jobs[job_id]["status"] == "cancelled":
+         raise HTTPException(status_code=409, detail="Job was cancelled during processing.")
     if jobs[job_id]["status"] == "failed":
         raise HTTPException(status_code=500, detail=jobs[job_id]["message"])
     
@@ -632,22 +477,46 @@ async def generate_wait_endpoint(
 # Replace the existing generate_video function with this async version
 async def process_video_generation(job_id: str, input_image_array, request: GenerationRequest):
     """Process video generation and update job status"""
-    # Run the generation in a thread pool to avoid blocking the event loop
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        None,  # Use default executor
-        generate_video_sync,
-        job_id,
-        input_image_array,
-        request
-    )
-    
-    # Signal completion
-    jobs[job_id]["complete_event"].set()
+    try:
+        # Check for cancellation before starting the thread
+        if jobs[job_id]["cancel_event"].is_set():
+             raise JobCancelledError("Job cancelled before starting execution.")
+             
+        await loop.run_in_executor(
+            None,  # Use default executor
+            generate_video_sync,
+            job_id,
+            input_image_array,
+            request
+        )
+    except JobCancelledError:
+         print(f"Job {job_id} cancelled.")
+         # Status should be set within generate_video_sync's finally block
+         pass 
+    except Exception as e:
+        # Handle exceptions raised *outside* generate_video_sync (e.g., executor issues)
+        traceback.print_exc()
+        if jobs[job_id]["status"] not in ["completed", "cancelled", "failed"]:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["message"] = f"Error during execution setup: {str(e)}"
+    finally:
+        # Ensure the completion event is always set, even if cancellation happened before execution
+        jobs[job_id]["complete_event"].set()
 
 @torch.no_grad()
 def generate_video_sync(job_id: str, input_image_array, request: GenerationRequest):
-    """Synchronous version of the generate_video function"""
+    """Synchronous version of the generate_video function with cancellation checks"""
+    
+    def check_cancel():
+        """Helper function to check for cancellation"""
+        if jobs[job_id]["cancel_event"].is_set():
+            print(f"Cancellation detected for job {job_id}")
+            raise JobCancelledError(f"Job {job_id} cancelled by request.")
+
+    # Initial check
+    check_cancel()
+
     # Set default parameters
     prompt = request.prompt
     n_prompt = ""
@@ -675,12 +544,14 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
     
     try:
         # Clean GPU
+        check_cancel()
         if not high_vram:
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
 
         # Text encoding
+        check_cancel()
         jobs[job_id]["message"] = "Text encoding..."
         
         if not high_vram:
@@ -698,6 +569,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
         llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
         # Processing input image
+        check_cancel()
         jobs[job_id]["message"] = "Image processing..."
 
         H, W, C = input_image_array.shape
@@ -710,6 +582,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
         input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
 
         # VAE encoding
+        check_cancel()
         jobs[job_id]["message"] = "VAE encoding..."
 
         if not high_vram:
@@ -718,6 +591,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
         start_latent = vae_encode(input_image_pt, vae)
 
         # CLIP Vision
+        check_cancel()
         jobs[job_id]["message"] = "CLIP Vision encoding..."
 
         if not high_vram:
@@ -727,6 +601,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
         image_encoder_last_hidden_state = image_encoder_output.last_hidden_state
 
         # Dtype
+        check_cancel()
         llama_vec = llama_vec.to(transformer.dtype)
         llama_vec_n = llama_vec_n.to(transformer.dtype)
         clip_l_pooler = clip_l_pooler.to(transformer.dtype)
@@ -735,6 +610,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
 
         # Sampling
         jobs[job_id]["message"] = "Start sampling..."
+        check_cancel()
 
         rnd = torch.Generator("cpu").manual_seed(seed)
         num_frames = latent_window_size * 4 - 3
@@ -751,6 +627,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
 
         for latent_padding in latent_paddings:
+            check_cancel() # Check at the start of each major loop iteration
             is_last_section = latent_padding == 0
             latent_padding_size = latent_padding * latent_window_size
 
@@ -765,6 +642,7 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
             clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
 
             if not high_vram:
+                check_cancel()
                 unload_complete_models()
                 move_model_to_device_with_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=gpu_memory_preservation)
 
@@ -774,10 +652,14 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
                 transformer.initialize_teacache(enable_teacache=False)
 
             def callback(d):
+                # Check cancellation within the callback (called frequently)
+                check_cancel() 
                 current_step = d['i'] + 1
                 percentage = int(100.0 * current_step / steps)
-                jobs[job_id]["progress"] = percentage
-                jobs[job_id]["message"] = f'Sampling {current_step}/{steps}. Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30):.2f} seconds (FPS-30).'
+                # Only update if status is still processing (avoid overwriting cancelling/cancelled)
+                if jobs[job_id]["status"] == "processing":
+                    jobs[job_id]["progress"] = percentage
+                    jobs[job_id]["message"] = f'Sampling {current_step}/{steps}. Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30):.2f} seconds (FPS-30).'
                 return
 
             generated_latents = sample_hunyuan(
@@ -810,6 +692,9 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
                 callback=callback,
             )
 
+            # ... (latent processing and decoding) ...
+            check_cancel() # Check after sampling and before decoding potentially long steps
+
             if is_last_section:
                 generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
 
@@ -817,12 +702,14 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
             history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
 
             if not high_vram:
+                check_cancel()
                 offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
                 load_model_as_complete(vae, target_device=gpu)
 
             real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
 
             if history_pixels is None:
+                check_cancel()
                 history_pixels = vae_decode(real_history_latents, vae).cpu()
             else:
                 section_latent_frames = (latent_window_size * 2 + 1) if is_last_section else (latent_window_size * 2)
@@ -832,42 +719,63 @@ def generate_video_sync(job_id: str, input_image_array, request: GenerationReque
                 history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
 
             if not high_vram:
+                check_cancel()
                 unload_complete_models()
 
             output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
             
             # Only save intermediate video files if requested
             if save_intermediates or is_last_section:
+                check_cancel() # Check before potentially long file save
                 save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
                 print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
-                jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
+                # Update URL only if not cancelling
+                if not jobs[job_id]["cancel_event"].is_set():
+                     jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
             
             if is_last_section:
                 # If we're not saving intermediates, make sure we save the final result
                 if not save_intermediates:
+                    check_cancel() # Check before final save
                     save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
                     print(f'Decoded final result. Shape {history_pixels.shape}')
-                    jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
+                    if not jobs[job_id]["cancel_event"].is_set():
+                        jobs[job_id]["video_url"] = f"/results/{job_id}_{total_generated_latent_frames}.mp4"
                 break
+        
+        # Final check before setting completed status
+        check_cancel()
 
         # Calculate total frames for duration
         total_frames = total_generated_latent_frames * 4 - 3  
 
-        # Final update when complete
+        # Final update when complete (only if not cancelled)
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["progress"] = 100
         jobs[job_id]["total_frames"] = total_frames  # Store total frames
         jobs[job_id]["message"] = f"Video generation completed. Length: {max(0, total_frames / 30):.2f} seconds"
         
-    except Exception as e:
-        traceback.print_exc()
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["message"] = f"Error: {str(e)}"
+    except JobCancelledError as e:
+        print(f"Job {job_id} cancelled during execution: {e}")
+        jobs[job_id]["status"] = "cancelled"
+        jobs[job_id]["message"] = "Job cancelled by user request."
+        # No need to re-raise, just let it exit the try block
         
+    except Exception as e:
+        # Catch other exceptions only if not already cancelled
+        if jobs[job_id]["status"] != "cancelled":
+            traceback.print_exc()
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["message"] = f"Error: {str(e)}"
+        
+    finally:
+        # Cleanup GPU memory regardless of outcome (success, fail, cancel)
         if not high_vram:
+            print(f"Job {job_id} final cleanup: Unloading models.")
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
             )
+        # Note: complete_event is set in the calling function (process_video_generation or generate_video)
 
 if __name__ == "__main__":
     uvicorn.run(app, host=args.server, port=args.port)
