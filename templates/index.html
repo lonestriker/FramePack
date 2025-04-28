@@ -138,7 +138,11 @@
                      onclick="handleImageClick(this, '{{ image.path | e }}', '{{ image.name | e }}')">
                     <!-- Adjusted image container: aspect ratio and padding -->
                     <div class="w-full aspect-square flex items-center justify-center overflow-hidden p-1 bg-gray-100"> 
-                        <img src="{{ url_for('serve_image', filename=image.path) }}" alt="{{ image.name }}" class="max-h-full max-w-full object-contain"> 
+                        <!-- Use data-src for lazy loading, add lazy-image class, set placeholder src -->
+                        <img data-src="{{ url_for('serve_image', filename=image.path) }}" 
+                             src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" 
+                             alt="{{ image.name }}" 
+                             class="max-h-full max-w-full object-contain lazy-image"> 
                     </div>
                     <!-- Adjusted footer padding and text size -->
                     <div class="p-1.5 w-full text-center bg-gray-50 border-t border-gray-100"> 
@@ -816,33 +820,41 @@
                     if (job.start_time) {
                         // For running jobs, calculate elapsed time from start_time to now
                         if (job.status === 'running') {
-                            const startTime = new Date(job.start_time);
-                            const now = new Date();
-                            const elapsedSeconds = (now - startTime) / 1000;
-                            
-                            let timeStr;
-                            if (elapsedSeconds < 60) {
-                                timeStr = `${elapsedSeconds.toFixed(1)}s`;
-                            } else {
-                                const minutes = Math.floor(elapsedSeconds / 60);
-                                const seconds = Math.round(elapsedSeconds % 60);
-                                timeStr = `${minutes}m ${seconds}s`;
+                            try {
+                                const startTime = new Date(job.start_time);
+                                const now = new Date();
+                                // Make sure the date is valid before calculating
+                                if (!isNaN(startTime.getTime())) {
+                                    const elapsedSeconds = (now - startTime) / 1000;
+                                    
+                                    let timeStr;
+                                    if (elapsedSeconds < 60) {
+                                        timeStr = `${elapsedSeconds.toFixed(1)}s`;
+                                    } else {
+                                        const minutes = Math.floor(elapsedSeconds / 60);
+                                        const seconds = Math.round(elapsedSeconds % 60);
+                                        timeStr = `${minutes}m ${seconds}s`;
+                                    }
+                                    elapsedTimeDisplay = `<div class="text-[10px] text-blue-600 mt-0.5">Elapsed: ${timeStr}</div>`;
+                                }
+                            } catch (e) {
+                                console.error('Error calculating elapsed time:', e);
                             }
-                            elapsedTimeDisplay = `<div class="text-[10px] text-blue-600 mt-0.5">Elapsed: ${timeStr}</div>`;
                         }
-                        // For completed jobs, use the stored generation_duration_seconds
-                        else if (job.status === 'completed' && job.generation_duration_seconds) {
-                            const duration = job.generation_duration_seconds;
-                            let timeStr;
-                            if (duration < 60) {
-                                timeStr = `${duration.toFixed(1)}s`;
-                            } else {
-                                const minutes = Math.floor(duration / 60);
-                                const seconds = Math.round(duration % 60);
-                                timeStr = `${minutes}m ${seconds}s`;
-                            }
-                            elapsedTimeDisplay = `<div class="text-[10px] text-green-600 mt-0.5">Generation time: ${timeStr}</div>`;
+                    }
+                    
+                    // For completed jobs, use the stored generation_duration_seconds
+                    if (job.status === 'completed' && job.generation_duration_seconds) {
+                        const duration = job.generation_duration_seconds;
+                        let timeStr;
+                        if (duration < 60) {
+                            timeStr = `${duration.toFixed(1)}s`;
+                        } else {
+                            const minutes = Math.floor(duration / 60);
+                            const seconds = Math.round(duration % 60);
+                            timeStr = `${minutes}m ${seconds}s`;
                         }
+                        elapsedTimeDisplay = `<div class="text-[10px] text-green-600 mt-0.5">Generation time: ${timeStr}</div>`;
                     }
                     // --- End Display Elapsed Time ---
 
@@ -991,6 +1003,33 @@
             }
         });
     }
+
+    // --- Lazy Loading Initialization ---
+    const lazyImages = document.querySelectorAll('.lazy-image');
+
+    if ('IntersectionObserver' in window) {
+        let lazyImageObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                    let lazyImage = entry.target;
+                    lazyImage.src = lazyImage.dataset.src;
+                    lazyImage.classList.remove('lazy-image'); // Optional: remove class after loading
+                    lazyImageObserver.unobserve(lazyImage); // Stop observing once loaded
+                }
+            });
+        });
+
+        lazyImages.forEach((lazyImage) => {
+            lazyImageObserver.observe(lazyImage);
+        });
+    } else {
+        // Fallback for browsers without IntersectionObserver (load all images)
+        console.warn('IntersectionObserver not supported. Loading all images immediately.');
+        lazyImages.forEach((lazyImage) => {
+            lazyImage.src = lazyImage.dataset.src;
+        });
+    }
+    // --- End Lazy Loading Initialization ---
 
 </script>
 {% endblock %}
