@@ -21,7 +21,7 @@ import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
@@ -39,6 +39,7 @@ from diffusers_helper.bucket_tools import find_nearest_bucket
 import base64
 import asyncio
 import datetime
+import threading
 
 # Custom exception for cancellation
 class JobCancelledError(Exception):
@@ -69,6 +70,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 # Job status tracking
 jobs = {}
 current_active_job_id: Optional[str] = None # Track the currently processing job
+job_lock = threading.Lock() # Lock for accessing current_active_job_id and jobs
 
 free_mem_gb = get_cuda_free_memory_gb(gpu)
 high_vram = free_mem_gb > 60
@@ -132,6 +134,9 @@ class GenerationRequest(BaseModel):
     gpu_memory_preservation: float = 6.0
     use_teacache: bool = True
     save_intermediates: bool = False
+
+class CancelRequest(BaseModel):
+    job_id: Optional[str] = None # Allow specifying job_id for cancellation
 
 class JobStatus(BaseModel):
     job_id: str
@@ -323,31 +328,52 @@ async def cancel_job_endpoint(job_id: str):
     return {"job_id": job_id, "status": jobs[job_id]["status"], "message": jobs[job_id]["message"]}
 
 @app.post("/cancel-current", status_code=200)
-async def cancel_current_job_endpoint():
+async def cancel_current_job_endpoint(request: Optional[CancelRequest] = None):
     """Cancels the currently active processing job, if any."""
     global current_active_job_id
-    
-    active_job_id = current_active_job_id # Read the current active job ID
-    
-    if active_job_id is None:
-        raise HTTPException(status_code=404, detail="No job is currently active.")
-        
-    if active_job_id not in jobs:
-        # This case should ideally not happen if tracking is correct
-        raise HTTPException(status_code=404, detail=f"Tracked active job ID '{active_job_id}' not found in job list.")
+    job_to_cancel = None
+    message = "No active job to cancel."
+    status_code = 404 # Not Found initially
 
-    if jobs[active_job_id]["status"] in ["completed", "failed", "cancelled"]:
-        raise HTTPException(status_code=400, detail=f"Current job '{active_job_id}' is already in final state: {jobs[active_job_id]['status']}")
+    with job_lock:
+        active_job = current_active_job_id
+        if active_job:
+            requested_job_id = request.job_id if request else None
 
-    print(f"Received cancellation request for current active job: {active_job_id}")
-    jobs[active_job_id]["cancel_event"].set()
-    jobs[active_job_id]["status"] = "cancelling"
-    jobs[active_job_id]["message"] = "Cancellation request received for active job, attempting to stop..."
-    
-    # Optionally wait a short time
-    await asyncio.sleep(1) 
-    
-    return {"job_id": active_job_id, "status": jobs[active_job_id]["status"], "message": jobs[active_job_id]["message"]}
+            # If a specific job ID is requested, only cancel if it matches the active one
+            if requested_job_id and requested_job_id != active_job:
+                message = f"Cancellation request for job {requested_job_id} ignored. Server is busy with job {active_job}."
+                status_code = 409 # Conflict
+            else:
+                # Either no specific job requested, or the requested job matches the active one
+                job_to_cancel = active_job
+                if job_to_cancel in jobs:
+                    if jobs[job_to_cancel]["status"] == "running":
+                        jobs[job_to_cancel]["status"] = "cancelling"
+                        jobs[job_to_cancel]["message"] = "Cancellation requested by user..."
+                        message = f"Cancellation requested for active job {job_to_cancel}."
+                        status_code = 200 # OK
+                        print(f"Received cancellation request for job {job_to_cancel}")
+                    elif jobs[job_to_cancel]["status"] in ["cancelling", "cancelled", "completed", "failed"]:
+                         message = f"Job {job_to_cancel} is already in state '{jobs[job_to_cancel]['status']}'. No action taken."
+                         status_code = 400 # Bad Request - already final or cancelling
+                    else: # e.g., queued
+                         jobs[job_to_cancel]["status"] = "cancelled" # Cancel directly if queued
+                         jobs[job_to_cancel]["message"] = "Job cancelled by user before starting."
+                         message = f"Job {job_to_cancel} was queued and has been cancelled."
+                         status_code = 200 # OK
+                         # Since it wasn't technically 'active', clear current_active_job_id if it matches
+                         if current_active_job_id == job_to_cancel:
+                              current_active_job_id = None
+                else:
+                    # Active job ID exists but not found in jobs dict (should not happen ideally)
+                    message = f"Active job {active_job} found but details missing. Attempting to clear active status."
+                    current_active_job_id = None
+                    status_code = 500 # Internal Server Error state
+
+    # Note: The actual interruption happens when the generation loop checks the status
+    # or via external signal handling if implemented (not done here).
+    return JSONResponse(content={"message": message}, status_code=status_code)
 
 @app.get("/health")
 async def health_check():
