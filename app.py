@@ -479,8 +479,6 @@ def api_jobs():
 # --- New API Route for Cancelling Jobs ---
 @app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
 def cancel_job(job_id):
-    global job_status # Ensure we can modify job_status
-    
     if job_id not in job_status:
         return jsonify({'error': 'Job not found'}), 404
 
@@ -493,16 +491,14 @@ def cancel_job(job_id):
     if current_status in ['queued', 'failed_will_retry']:
         job_info['status'] = 'cancelled'
         job_info['cancelled'] = True # Set the flag
-        job_info['message'] = "Cancelled by user before execution." # Update message
         job_info['output'].append("Job cancelled by user before execution.")
         logger.info(f"Job Cancelled (Queued) - ID: {job_id}")
         save_queue_state() # Save state after cancelling queued job
-        return jsonify({'message': 'Job cancelled successfully (was queued).'}), 200
+        return jsonify({'message': 'Job cancelled successfully'}), 200
         
     elif current_status == 'running':
         job_info['status'] = 'cancelling' # Mark as cancelling
         job_info['cancelled'] = True # Set the flag for the worker to potentially see (best effort)
-        job_info['message'] = "Cancellation requested..." # Update message
         job_info['output'].append("Cancellation requested by user...")
         logger.info(f"Job Cancellation Requested (Running) - ID: {job_id}")
         
@@ -512,36 +508,19 @@ def cancel_job(job_id):
             cancel_url = f"{assigned_server}/cancel-current"
             logger.info(f"Sending cancel signal to {cancel_url} for job {job_id}")
             try:
-                # Send request including the specific job_id
-                response = requests.post(cancel_url, timeout=10, json={'job_id': job_id}) # 10 second timeout, send job_id
-
-                # Process response from the server
-                response_data = {}
-                try:
-                    response_data = response.json()
-                except json.JSONDecodeError:
-                    pass # Ignore if response is not JSON
-
-                server_message = response_data.get('message', response.text)
-
+                # Send request in a separate thread to avoid blocking Flask? Or use async client?
+                # For simplicity, using a blocking request with a short timeout for now.
+                # Consider using httpx or similar for async requests if this becomes a bottleneck.
+                response = requests.post(cancel_url, timeout=5) # 5 second timeout
                 if response.status_code == 200:
-                    logger.info(f"Successfully sent cancel signal to {assigned_server} for job {job_id}. Server response: {server_message}")
-                    job_info['output'].append(f"Cancel signal sent. Server response: {server_message}")
-                elif response.status_code == 404: # No active job on server
-                     logger.warning(f"Cancel signal sent, but server {assigned_server} reported no active job. Job: {job_id}. Server response: {server_message}")
-                     job_info['output'].append(f"Cancel signal sent, server reported no active job. ({server_message})")
-                elif response.status_code == 409: # Server busy with different job
-                     logger.warning(f"Cancel signal sent for job {job_id}, but server {assigned_server} is busy with a different job. Server response: {server_message}")
-                     job_info['output'].append(f"Cancel signal sent, but server busy with different job. ({server_message})")
-                elif response.status_code == 400: # Job already final/cancelling on server
-                     logger.warning(f"Cancel signal sent for job {job_id}, but server reported job already final/cancelling. Server response: {server_message}")
-                     job_info['output'].append(f"Cancel signal sent, server reported job state issue. ({server_message})")
+                    logger.info(f"Successfully sent cancel signal to {assigned_server} for job {job_id}. Server response: {response.text}")
+                    job_info['output'].append("Cancel signal sent to processing server.")
+                elif response.status_code == 404:
+                     logger.warning(f"Cancel signal sent, but server {assigned_server} reported no active job (maybe finished?). Job: {job_id}")
+                     job_info['output'].append("Cancel signal sent, server reported no active job.")
                 else:
-                    logger.error(f"Failed to send cancel signal to {assigned_server} for job {job_id}. Status code: {response.status_code}, Response: {server_message}")
-                    job_info['output'].append(f"Error sending cancel signal to server (HTTP {response.status_code}). Response: {server_message}")
-            except requests.exceptions.Timeout:
-                 logger.error(f"Timeout sending cancel signal to {assigned_server} for job {job_id}.")
-                 job_info['output'].append("Timeout sending cancel signal to server.")
+                    logger.error(f"Failed to send cancel signal to {assigned_server} for job {job_id}. Status code: {response.status_code}, Response: {response.text}")
+                    job_info['output'].append(f"Error sending cancel signal to server (HTTP {response.status_code}).")
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error sending cancel signal to {assigned_server} for job {job_id}: {e}")
                 job_info['output'].append(f"Error communicating with server to send cancel signal: {e}")
@@ -550,7 +529,7 @@ def cancel_job(job_id):
             job_info['output'].append("Could not determine server to send cancel signal.")
             
         # Note: save_queue_state will be called by the worker when it finishes/fails/cancels
-        return jsonify({'message': 'Cancellation requested. Signal sent to processing server (best effort). Check job status for details.'}), 200
+        return jsonify({'message': 'Cancellation requested. Signal sent to processing server (best effort).'}), 200
     else:
         # Should not happen based on initial check, but good practice
         return jsonify({'error': f'Cannot cancel job in state: {current_status}'}), 400
@@ -1018,9 +997,8 @@ def worker():
                       if assigned_server in server_status:
                           # Always mark available and reset state if job didn't fail
                           server_status[assigned_server]['available'] = True
-                          if not job_failed: # Reset counters only on success or cancellation
-                              server_status[assigned_server]['fail_count'] = 0 
-                              server_status[assigned_server]['next_retry_time'] = 0
+                          server_status[assigned_server]['fail_count'] = 0 
+                          server_status[assigned_server]['next_retry_time'] = 0
                           print(f"Server {assigned_server} released (job success/cancelled).")
                       else:
                           print(f"Server {assigned_server} no longer in config, cannot release.")
