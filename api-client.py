@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 import base64
+import uuid
 
 
 def parse_args():
@@ -28,6 +29,7 @@ def parse_args():
     gen_group.add_argument("--sync", action="store_true", help="Use synchronous API endpoint (/generate-wait)")
     gen_group.add_argument("--no-teacache", action="store_true", default=False,
                         help="Disable TeaCache (slower generation but may improve hand/finger quality)")
+    gen_group.add_argument("--job_id", type=str, required=False, help="Client-supplied job ID (for integration with app.py)")
 
     # Group for cancellation
     cancel_group = parser.add_argument_group('Cancellation Options')
@@ -155,7 +157,7 @@ def submit_generation_job_sync(api_url, image_url, image_path, prompt, seed, len
         sys.exit(1)
 
 
-def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory, use_teacache):
+def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, crf, gpu_memory, use_teacache, job_id=None):
     """Submit a generation job to the API and return the job ID"""
     try:
         data = {
@@ -166,6 +168,8 @@ def submit_generation_job(api_url, image_url, image_path, prompt, seed, length, 
             'gpu_memory_preservation': gpu_memory,
             'use_teacache': use_teacache
         }
+        if job_id:
+            data['job_id'] = job_id
         
         print(f"Submitting job to {api_url}/generate")
         print(f"Prompt: {prompt}")
@@ -286,7 +290,8 @@ def poll_job_status(api_url, job_id, poll_interval):
 
                 if status == "completed":
                     print("\nPolling complete: Job finished successfully.", flush=True)
-                    return data.get("result_url") # Return the result URL
+                    # Return both result_url and video_url if present
+                    return data.get("result_url") or data.get("video_url")
                 elif status == "failed":
                     print(f"\nPolling complete: Job failed. Error: {data.get('error', 'Unknown error')}", flush=True)
                     sys.exit(1) # Exit with error code
@@ -342,7 +347,7 @@ def download_result(api_url, video_url, output_dir):
                         progress_bar.update(len(chunk))
         
         print(f"Video downloaded successfully to {output_path}")
-        return output_path
+        return output_path, filename
         
     except requests.exceptions.RequestException as e:
         print(f"Error downloading result: {str(e)}")
@@ -516,7 +521,8 @@ def main():
             print(f"Video duration: {duration} seconds")
             print(f"Video file: {output_path}")
             if output_path:
-                print(f"OUTPUT_FILE_PATH::{output_path}") 
+                print(f"FINAL_VIDEO_PATH::{output_path}") 
+                sys.stdout.flush() # Ensure output is flushed
         except (KeyError, IndexError) as e:
             print(f"Error parsing API response: {str(e)}")
             print("Response:", json.dumps(response_data, indent=2))
@@ -525,7 +531,8 @@ def main():
     else:
         # --- Asynchronous Mode (Modified) ---
         print("--- Asynchronous Mode ---")
-        job_id = submit_generation_job(
+        job_id = args.job_id or str(uuid.uuid4())
+        submitted_job_id = submit_generation_job(
             args.api_url,
             args.url,
             args.image, 
@@ -534,22 +541,22 @@ def main():
             args.length,
             args.crf,
             args.gpu_memory,
-            use_teacache
+            use_teacache,
+            job_id=job_id
         )
-        
-        # Poll for status and print progress directly
+        # Use the job_id we sent, not the one returned by the server
         video_url = poll_job_status(args.api_url, job_id, args.poll_interval)
         
         # Download the result if polling completed successfully (didn't return None or exit)
         if video_url:
-            output_path = download_result(args.api_url, video_url, args.output_dir)
+            output_path, filename = download_result(args.api_url, video_url, args.output_dir)
             # Print final success message (already printed by poll_job_status)
             # print("\nGeneration completed successfully!") 
             print(f"Video file: {output_path}", flush=True)
             # --- Print special marker for app.py to find the output path ---
             # Ensure this is the *last* thing printed on success
             if output_path:
-                print(f"OUTPUT_FILE_PATH::{output_path}", flush=True) 
+                print(f"FINAL_VIDEO_PATH::{filename}", flush=True) 
             # --- End special marker ---
         elif video_url is None: # Indicates cancellation occurred during polling
              print("\nJob was cancelled.", flush=True)

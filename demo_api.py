@@ -190,10 +190,16 @@ async def generate_endpoint(
     mp4_crf: Optional[int] = Form(16),
     gpu_memory_preservation: Optional[float] = Form(6.0),
     use_teacache: Optional[bool] = Form(True),
-    save_intermediates: Optional[bool] = Form(False)
+    save_intermediates: Optional[bool] = Form(False),
+    job_id: Optional[str] = Form(None)  # Accept client-supplied job_id
 ):
-    # Generate a unique job ID
-    job_id = str(uuid.uuid4())
+    global current_active_job_id
+    # --- Only allow one job at a time ---
+    with job_lock:
+        if current_active_job_id is not None and jobs.get(current_active_job_id, {}).get("status") in ["processing", "running"]:
+            raise HTTPException(status_code=409, detail=f"Server is busy with job {current_active_job_id}")
+        current_active_job_id = job_id or str(uuid.uuid4())
+        job_id = current_active_job_id
     
     # Check that either image or URL is provided, but not both
     if image is None and url is None:
@@ -278,12 +284,12 @@ async def generate_endpoint(
         save_intermediates=save_intermediates or args.save_intermediates  # Use cmd line flag or per-request setting
     )
     
-    # Initialize job status
+    # Initialize job status with 'submitted' state
     jobs[job_id] = {
         "job_id": job_id,
-        "status": "queued",
+        "status": "submitted",  # <-- Set to 'submitted' immediately
         "progress": 0,
-        "message": "Job queued, waiting to start",
+        "message": "Job submitted, waiting to start",
         "video_url": None,
         "creation_time": datetime.datetime.utcnow().isoformat(), # Add creation time
         "complete_event": asyncio.Event(),
@@ -389,10 +395,16 @@ async def generate_wait_endpoint(
     mp4_crf: Optional[int] = Form(16),
     gpu_memory_preservation: Optional[float] = Form(6.0),
     use_teacache: Optional[bool] = Form(True),
-    save_intermediates: Optional[bool] = Form(False)
+    save_intermediates: Optional[bool] = Form(False),
+    job_id: Optional[str] = Form(None)  # Accept client-supplied job_id
 ):
-    # Generate a unique job ID
-    job_id = str(uuid.uuid4())
+    global current_active_job_id
+    # --- Only allow one job at a time ---
+    with job_lock:
+        if current_active_job_id is not None and jobs.get(current_active_job_id, {}).get("status") in ["processing", "running"]:
+            raise HTTPException(status_code=409, detail=f"Server is busy with job {current_active_job_id}")
+        current_active_job_id = job_id or str(uuid.uuid4())
+        job_id = current_active_job_id
     # Debugging: Print all arguments
     print(f"Arguments received: image={image}, url={url}, prompt={prompt}, seed={seed}, "
         f"total_second_length={total_second_length}, mp4_crf={mp4_crf}, "
@@ -482,12 +494,12 @@ async def generate_wait_endpoint(
         save_intermediates=save_intermediates or args.save_intermediates  # Use cmd line flag or per-request setting
     )
     
-    # Initialize job status
+    # Initialize job status with 'submitted' state
     jobs[job_id] = {
         "job_id": job_id,
-        "status": "queued",
+        "status": "submitted",  # <-- Set to 'submitted' immediately
         "progress": 0,
-        "message": "Job queued, waiting to start",
+        "message": "Job submitted, waiting to start",
         "video_url": None,
         "video_data": None,  # We'll store the video data here
         "creation_time": datetime.datetime.utcnow().isoformat(), # Add creation time

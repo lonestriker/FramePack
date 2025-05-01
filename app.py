@@ -244,6 +244,15 @@ server_status = {
 server_lock = threading.Lock() # Keep the lock
 queue_paused = False # Initialize queue pause state
 
+import threading
+job_status_lock = threading.Lock()  # Add a lock for job_status updates
+
+def safe_update_job_status(job_id, updates):
+    """Thread-safe update of job_status dict for a given job_id."""
+    with job_status_lock:
+        if job_id in job_status:
+            job_status[job_id].update(updates)
+
 # --- Routes ---
 
 @app.route('/', methods=['GET', 'POST'])
@@ -512,10 +521,9 @@ def cancel_job(job_id):
             cancel_url = f"{assigned_server}/cancel-current"
             logger.info(f"Sending cancel signal to {cancel_url} for job {job_id}")
             try:
-                # Send request including the specific job_id
-                response = requests.post(cancel_url, timeout=10, json={'job_id': job_id}) # 10 second timeout, send job_id
+                # Always send the job_id in the payload for robust matching
+                response = requests.post(cancel_url, timeout=10, json={'job_id': job_id})
 
-                # Process response from the server
                 response_data = {}
                 try:
                     response_data = response.json()
@@ -527,21 +535,40 @@ def cancel_job(job_id):
                 if response.status_code == 200:
                     logger.info(f"Successfully sent cancel signal to {assigned_server} for job {job_id}. Server response: {server_message}")
                     job_info['output'].append(f"Cancel signal sent. Server response: {server_message}")
-                elif response.status_code == 404: # No active job on server
-                     logger.warning(f"Cancel signal sent, but server {assigned_server} reported no active job. Job: {job_id}. Server response: {server_message}")
-                     job_info['output'].append(f"Cancel signal sent, server reported no active job. ({server_message})")
-                elif response.status_code == 409: # Server busy with different job
-                     logger.warning(f"Cancel signal sent for job {job_id}, but server {assigned_server} is busy with a different job. Server response: {server_message}")
-                     job_info['output'].append(f"Cancel signal sent, but server busy with different job. ({server_message})")
-                elif response.status_code == 400: # Job already final/cancelling on server
-                     logger.warning(f"Cancel signal sent for job {job_id}, but server reported job already final/cancelling. Server response: {server_message}")
-                     job_info['output'].append(f"Cancel signal sent, server reported job state issue. ({server_message})")
+                elif response.status_code in (404, 409, 400):
+                    # Enhanced diagnostics: fetch job list from server
+                    logger.warning(f"Cancel signal error ({response.status_code}) for job {job_id} on {assigned_server}. Server response: {server_message}")
+                    job_info['output'].append(f"Cancel signal error ({response.status_code}). Server response: {server_message}")
+                    # Try to fetch jobs from the API server for diagnostics
+                    try:
+                        jobs_url = f"{assigned_server}/jobs"
+                        jobs_resp = requests.get(jobs_url, timeout=10)
+                        if jobs_resp.status_code == 200:
+                            jobs_list = jobs_resp.json()
+                            logger.warning(f"Job list from {assigned_server} after cancel attempt: {json.dumps(jobs_list, indent=2)}")
+                            # Check if our job_id is present and its status
+                            found = False
+                            for job in jobs_list:
+                                if job.get("job_id") == job_id:
+                                    found = True
+                                    logger.warning(f"Job {job_id} found on server with status: {job.get('status')}")
+                                    job_info['output'].append(f"Diagnostic: Job {job_id} found on server with status: {job.get('status')}")
+                                    break
+                            if not found:
+                                logger.warning(f"Job {job_id} NOT found on server job list after cancel attempt.")
+                                job_info['output'].append(f"Diagnostic: Job {job_id} NOT found on server job list after cancel attempt.")
+                        else:
+                            logger.warning(f"Failed to fetch job list from {assigned_server} (HTTP {jobs_resp.status_code})")
+                            job_info['output'].append(f"Diagnostic: Could not fetch job list from server (HTTP {jobs_resp.status_code})")
+                    except Exception as diag_e:
+                        logger.error(f"Error fetching job list from {assigned_server} for diagnostics: {diag_e}")
+                        job_info['output'].append(f"Diagnostic: Error fetching job list from server: {diag_e}")
                 else:
                     logger.error(f"Failed to send cancel signal to {assigned_server} for job {job_id}. Status code: {response.status_code}, Response: {server_message}")
                     job_info['output'].append(f"Error sending cancel signal to server (HTTP {response.status_code}). Response: {server_message}")
             except requests.exceptions.Timeout:
-                 logger.error(f"Timeout sending cancel signal to {assigned_server} for job {job_id}.")
-                 job_info['output'].append("Timeout sending cancel signal to server.")
+                logger.error(f"Timeout sending cancel signal to {assigned_server} for job {job_id}.")
+                job_info['output'].append("Timeout sending cancel signal to server.")
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error sending cancel signal to {assigned_server} for job {job_id}: {e}")
                 job_info['output'].append(f"Error communicating with server to send cancel signal: {e}")
@@ -651,14 +678,26 @@ def api_server_status():
     with server_lock:
         status_copy = {}
         current_time = time.time()
-        # Use API_SERVERS as the source of truth for which servers *should* exist
         for server in API_SERVERS:
-            status = server_status.get(server, {'available': False, 'fail_count': 0, 'next_retry_time': 0, 'enabled': False}) # Default if missing
-            status_copy[server] = status.copy() # Create a copy of the inner dict
+            status = server_status.get(server, {'available': False, 'fail_count': 0, 'next_retry_time': 0, 'enabled': False})
+            # --- Robust server health check ---
+            try:
+                health_resp = requests.get(f"{server}/health", timeout=3)
+                if health_resp.status_code == 200:
+                    status['available'] = True
+                    status['reachable'] = True
+                else:
+                    status['available'] = False
+                    status['reachable'] = False
+            except Exception:
+                status['available'] = False
+                status['reachable'] = False
+            status_copy[server] = status.copy()
             status_copy[server]['next_retry_available_in_seconds'] = max(0, status['next_retry_time'] - current_time)
             status_copy[server]['next_retry_time_readable'] = time.ctime(status['next_retry_time']) if status['next_retry_time'] > 0 else "N/A"
-            # Ensure enabled status is included, defaulting to True if somehow missing
-            status_copy[server]['enabled'] = status.get('enabled', True) 
+            status_copy[server]['enabled'] = status.get('enabled', True)
+            # Add a new field for UI clarity
+            status_copy[server]['reachable'] = status['available']
         return jsonify(status_copy)
 
 # --- Route to serve images safely ---
@@ -801,6 +840,52 @@ def worker():
         job_status[job_id]['start_time'] = datetime.utcnow().isoformat() + 'Z'  # ISO format with UTC timezone
         job_status[job_id]['assigned_server'] = assigned_server # Store the assigned server
 
+        # --- Immediately after assigning the job, synchronously wait for job to appear on server ---
+        try:
+            jobs_url = f"{assigned_server}/jobs"
+            found = False
+            max_wait = 5.0  # seconds
+            poll_interval = 0.2  # seconds
+            waited = 0.0
+            while waited < max_wait:
+                try:
+                    jobs_resp = requests.get(jobs_url, timeout=3)
+                    if jobs_resp.status_code == 200:
+                        jobs_list = jobs_resp.json()
+                        for job in jobs_list:
+                            if job.get("job_id") == job_id and job.get("status") in ("submitted", "running", "processing"):
+                                found = True
+                                logger.info(f"Job {job_id} is present on server {assigned_server} after assignment. Status: {job.get('status')}")
+                                break
+                        if found:
+                            break
+                    else:
+                        logger.warning(f"Failed to fetch job list from {assigned_server} after assignment (HTTP {jobs_resp.status_code})")
+                except Exception as diag_e:
+                    logger.error(f"Error fetching job list from {assigned_server} after assignment: {diag_e}")
+                time.sleep(poll_interval)
+                waited += poll_interval
+            if not found:
+                logger.warning(f"Job {job_id} NOT found on server {assigned_server} after assignment (waited {max_wait}s). Server jobs: {json.dumps(jobs_list, indent=2) if 'jobs_list' in locals() else 'N/A'}")
+                safe_update_job_status(job_id, {
+                    'status': 'orphaned',
+                    'message': 'Job not found on server after assignment. Possible server restart or network issue.',
+                    'output': job_status[job_id]['output'] + ['Job not found on server after assignment.']
+                })
+                job_queue.task_done()
+                continue
+        except Exception as diag_e:
+            logger.error(f"Error during synchronous job presence check: {diag_e}")
+            safe_update_job_status(job_id, {
+                'status': 'orphaned',
+                'message': f'Error during job presence check: {diag_e}',
+                'output': job_status[job_id]['output'] + [f'Error during job presence check: {diag_e}']
+            })
+            job_queue.task_done()
+            continue
+        # --- End synchronous job presence check ---
+
+        # --- Job Execution ---
         job_failed = False
         error_message = ""
 
@@ -815,7 +900,8 @@ def worker():
                 '--api_url', assigned_server,
                 '--prompt', params['prompt'],
                 '--length', str(params['duration']),
-                '--image', str(image_path)  # Convert Path object to string
+                '--image', str(image_path),
+                '--job_id', job_id  # Pass job_id to api-client.py
             ]
             if not params.get('use_teacache', True): # Default to True if missing
                 command.append('--no-teacache')
@@ -834,36 +920,46 @@ def worker():
                                        cwd=str(pathlib.Path(__file__).parent.absolute()))
 
             output_lines = []
-            # Note: We don't have a reliable way to check the 'cancelled' flag *during* Popen
-            # without more complex async process handling. Cancellation for running jobs
-            # is primarily handled by setting the status to 'cancelling' via the API.
-            for line in process.stdout:
-                stripped_line = line.strip()
-                
-                # --- Check for Progress Updates ---
-                if stripped_line.startswith("PROGRESS::"):
-                    try:
-                        parts = stripped_line.split("::", 2)
-                        if len(parts) == 3:
-                            progress_val = int(parts[1])
-                            message_val = parts[2]
-                            job_status[job_id]['progress'] = progress_val
-                            job_status[job_id]['message'] = message_val
-                            # Optionally log progress updates
-                            # if ENABLE_JOB_LOGGING:
-                            #     logger.debug(f"Job {job_id} Progress: {progress_val}% - {message_val}")
-                        continue # Don't add progress lines to regular output
-                    except (ValueError, IndexError):
-                        # Ignore malformed progress lines
-                        pass 
-                # --- End Progress Update Check ---
+            try:
+                for line in process.stdout:
+                    stripped_line = line.strip()
+                    # --- Check for Progress Updates ---
+                    if stripped_line.startswith("PROGRESS::"):
+                        try:
+                            parts = stripped_line.split("::", 2)
+                            if len(parts) == 3:
+                                progress_val = int(parts[1])
+                                message_val = parts[2]
+                                job_status[job_id]['progress'] = progress_val
+                                job_status[job_id]['message'] = message_val
+                                # Optionally log progress updates
+                                # if ENABLE_JOB_LOGGING:
+                                #     logger.debug(f"Job {job_id} Progress: {progress_val}% - {message_val}")
+                            continue # Don't add progress lines to regular output
+                        except (ValueError, IndexError):
+                            # Ignore malformed progress lines
+                            pass 
+                    # --- End Progress Update Check ---
+                    # Store regular output lines
+                    if len(job_status[job_id]['output']) < 100: # Limit output lines
+                        job_status[job_id]['output'].append(stripped_line)
+                    output_lines.append(stripped_line) # Keep local copy for logging
+                process.wait()
+            except Exception as e:
+                logger.error(f"Exception while reading process output for job {job_id}: {e}")
+                process.kill()
+                safe_update_job_status(job_id, {
+                    'status': 'failed',
+                    'message': f'Exception while reading process output: {e}',
+                    'output': job_status[job_id]['output'] + [f'Exception while reading process output: {e}']
+                })
+                job_queue.task_done()
+                continue
 
-                # Store regular output lines
-                if len(job_status[job_id]['output']) < 100: # Limit output lines
-                    job_status[job_id]['output'].append(stripped_line)
-                output_lines.append(stripped_line) # Keep local copy for logging
-
-            process.wait()
+            # --- Debug: Log all output lines received ---
+            if ENABLE_JOB_LOGGING:
+                 logger.debug(f"Job {job_id} subprocess output lines:\n" + "\n".join(output_lines))
+            # --- End Debug ---
 
             # Check status *after* process finishes
             if job_status.get(job_id, {}).get('status') == 'cancelling':
@@ -872,7 +968,6 @@ def worker():
                  job_status[job_id]['output'].append("Job process finished after cancellation request.")
                  logger.warning(f"Job Finished After Cancel - ID: {job_id}, Server: {assigned_server}. Final RC: {process.returncode}")
                  job_failed = True # Treat as failure for server backoff purposes? Or just cancelled? Let's treat as cancelled.
-                 job_failed = False # Override: Treat as cancelled, don't penalize server unless it actually errored.
                  error_message = "Job cancelled by user." # Set message for logging/status
                  # Skip normal success/fail logic below if cancelled
             elif process.returncode != 0:
@@ -896,25 +991,66 @@ def worker():
                     if not server_status[assigned_server]['available']:
                          server_status[assigned_server]['available'] = True # Should already be false, but make sure
                          print(f"Server {assigned_server} marked available after job success.")
-                print(f"Job {job_id} completed successfully on {assigned_server}. Resetting server status.")
-                if ENABLE_JOB_LOGGING:
-                    # Extract output filename based on api-client.py's specific output format
-                    output_filename = "Unknown"
-                    output_prefix = "Video file: "
-                    for line in output_lines:
-                        stripped_line = line.strip()
-                        if stripped_line.startswith(output_prefix):
-                            full_path = stripped_line[len(output_prefix):].strip()
-                            if full_path: # Ensure we got a path
-                                output_filename = os.path.basename(full_path)
-                                break # Found it
+                    print(f"Job {job_id} completed successfully on {assigned_server}. Resetting server status.")
+                # --- Updated Filename Extraction with Logging ---
+                output_filename = "Unknown"
+                output_prefix = "FINAL_VIDEO_PATH::" # Use the new prefix
+                found_path_line = False # Flag to see if we even find the line
+                for line in reversed(output_lines): # Check from the end for efficiency
+                    stripped_line = line.strip()
+                    if stripped_line.startswith(output_prefix):
+                        found_path_line = True
+                        # Only use the filename part after the marker
+                        full_path = stripped_line[len(output_prefix):].strip()
+                        output_filename = os.path.basename(full_path)
+                        if ENABLE_JOB_LOGGING:
+                            logger.info(f"Job {job_id}: Found FINAL_VIDEO_PATH marker, extracted filename: {output_filename}")
+                        break
 
-                    # Store the found (or default 'Unknown') filename
-                    job_status[job_id]['output_filename'] = output_filename
+                # --- Fallback: Try to extract .mp4 path from any output line ---
+                if not found_path_line:
+                    mp4_lines = []
+                    for line in reversed(output_lines):
+                        if ".mp4" in line:
+                            mp4_lines.append(line)
+                            # Try to extract the path after "Video file:" or similar
+                            if "Video file:" in line:
+                                possible_path = line.split("Video file:")[-1].strip()
+                                if possible_path.endswith(".mp4") and os.path.isfile(possible_path):
+                                    output_filename = os.path.basename(possible_path)
+                                    logger.warning(f"Job {job_id}: Fallback extracted filename from 'Video file:' line: {output_filename}")
+                                    break
+                            # Otherwise, just look for any .mp4 path in the line
+                            for part in line.split():
+                                if part.endswith(".mp4") and os.path.isfile(part):
+                                    output_filename = os.path.basename(part)
+                                    logger.warning(f"Job {job_id}: Fallback extracted filename from .mp4 in line: {output_filename}")
+                                    break
+                        if output_filename != "Unknown":
+                            break
+                    if ENABLE_JOB_LOGGING:
+                        logger.warning(f"Job {job_id}: Lines containing .mp4 for debugging: {mp4_lines}")
+                # --- End Fallback ---
+
+                # Log if the prefix line wasn't found at all
+                if not found_path_line and ENABLE_JOB_LOGGING:
+                     logger.warning(f"Job {job_id}: Did not find line with prefix '{output_prefix}' in output.")
+                     # Log last 20 lines for debugging
+                     logger.warning(f"Job {job_id}: Last 20 lines of output: {output_lines[-20:]}")
+                     # Log full output if still unknown
+                     if output_filename == "Unknown":
+                         logger.error(f"Job {job_id}: FULL OUTPUT for debugging filename extraction:\n" + "\n".join(output_lines))
+
+                if output_filename == "Unknown":
+                     logger.warning(f"Job {job_id} completed but could not extract filename using prefix '{output_prefix}'. Final output_filename: {output_filename}. Check previous logs.")
+                job_status[job_id]['output_filename'] = output_filename
+                # --- End Updated Filename Extraction ---
+
+                if ENABLE_JOB_LOGGING:
                     # Add prompt to Job Completed log
                     teacache_status = params.get('use_teacache', True)
                     logger.info(f"Job Completed - ID: {job_id}, Output: {output_filename}, Prompt: '{params['prompt']}', UseTeaCache: {teacache_status}")
-
+           
         except Exception as e:
             # Check if cancelled during exception handling
             if job_status.get(job_id, {}).get('status') == 'cancelling':
@@ -949,7 +1085,6 @@ def worker():
                     else:
                         # Already a timestamp (float)
                         start_timestamp = recorded_start_time
-                    
                     duration_seconds = end_time - start_timestamp
                     # Sanity check for duration
                     if duration_seconds < 0 or duration_seconds > 3600:  # More than an hour is likely wrong
@@ -960,7 +1095,6 @@ def worker():
                             duration_seconds = end_time - start_time
                         else:
                             duration_seconds = 0  # Failed to get a valid duration
-                            
                     job_info['generation_duration_seconds'] = duration_seconds
                     # Optionally log the duration
                     if ENABLE_JOB_LOGGING:
@@ -976,7 +1110,6 @@ def worker():
             server_needs_release = True 
             # Check final status - if it ended up as 'cancelled' or 'cancelling', don't re-queue
             final_status = job_status.get(job_id, {}).get('status')
-            
             if job_failed and final_status not in ['cancelled', 'cancelling']:
                 # Failure: Penalize server, re-queue job, mark server available for future (after backoff)
                 job_status[job_id]['status'] = 'failed_will_retry' 
@@ -1018,7 +1151,7 @@ def worker():
                       if assigned_server in server_status:
                           # Always mark available and reset state if job didn't fail
                           server_status[assigned_server]['available'] = True
-                          if not job_failed: # Reset counters only on success or cancellation
+                          if not job_failed: # Reset counters only on success or cancellations
                               server_status[assigned_server]['fail_count'] = 0 
                               server_status[assigned_server]['next_retry_time'] = 0
                           print(f"Server {assigned_server} released (job success/cancelled).")
@@ -1030,6 +1163,34 @@ def worker():
             save_queue_state() 
 
             job_queue.task_done() # Signal task completion for queue management
+
+def reconcile_with_servers():
+    """On startup, query all API servers for running jobs and try to reconcile state."""
+    for server in API_SERVERS:
+        try:
+            jobs_url = f"{server}/jobs"
+            jobs_resp = requests.get(jobs_url, timeout=10)
+            if jobs_resp.status_code == 200:
+                jobs_list = jobs_resp.json()
+                for job in jobs_list:
+                    job_id = job.get("job_id")
+                    if job_id and job_id not in job_status:
+                        logger.info(f"Reconciling orphaned/running job from server {server}: {job_id}")
+                        job_status[job_id] = {
+                            'status': job.get('status', 'orphaned'),
+                            'output': [f"Reconciled from server {server} on startup."],
+                            'params': {},
+                            'creation_time': job.get('creation_time', ''),
+                            'cancelled': False,
+                            'progress': job.get('progress', 0),
+                            'message': job.get('message', ''),
+                            'assigned_server': server,
+                            'output_filename': os.path.basename(job.get('video_url', '')) if job.get('video_url') else None
+                        }
+            else:
+                logger.warning(f"Failed to fetch jobs from server {server} during reconciliation (HTTP {jobs_resp.status_code})")
+        except Exception as e:
+            logger.error(f"Error during reconciliation with server {server}: {e}")
 
 # --- Main Execution ---
 if __name__ == '__main__':
@@ -1045,9 +1206,12 @@ if __name__ == '__main__':
     # Load initial queue state BEFORE starting workers
     was_paused_on_load = load_queue_state()
 
+    # --- Reconcile with API servers on startup ---
+    reconcile_with_servers()
+
     # Register saving queue state on exit
     atexit.register(save_queue_state)
-        
+
     # Start background worker thread(s)
     # Match the number of workers to the number of API servers for concurrency
     num_workers = len(API_SERVERS)
@@ -1058,12 +1222,12 @@ if __name__ == '__main__':
 
     if ENABLE_JOB_LOGGING:
         logger.info(f"Starting Flask server with {num_workers} workers on port {cli_args.port}.")
-        if was_paused_on_load:
-             logger.info("Queue was paused on startup due to restored jobs.")
+        if was_paused_on_load: 
+            logger.info("Queue was paused on startup due to restored jobs.")
     else:
         print(f"Job logging disabled via config. Starting server on port {cli_args.port}.")
-        if was_paused_on_load:
-             print("Queue was paused on startup due to restored jobs.")
+        if was_paused_on_load: 
+            print("Queue was paused on startup due to restored jobs.")
 
     if ENABLE_JOB_LOGGING:
         logger.info(f"Loaded options: {app_options}")
